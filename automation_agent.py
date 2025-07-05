@@ -59,6 +59,69 @@ class PathBasedUploader:
         self.temp_dir = Path(tempfile.gettempdir()) / "auto_uploader"
         self.temp_dir.mkdir(exist_ok=True)
         
+    def search_for_file(self, filename):
+        """Search for a file in common locations"""
+        search_locations = [
+            Path.home() / "Downloads",
+            Path.home() / "Downloads" / "Telegram Desktop", 
+            Path.home() / "Documents",
+            Path.home() / "Desktop",
+        ]
+        
+        # Add Windows-specific paths if on Windows
+        import platform
+        if platform.system() == "Windows":
+            username = os.getenv("USERNAME", "")
+            if username:
+                search_locations.extend([
+                    Path("C:/Users") / username / "Downloads",
+                    Path("C:/Users") / username / "Downloads" / "Telegram Desktop",
+                    Path("C:/Users") / username / "Documents",
+                    Path("C:/Users") / username / "Desktop"
+                ])
+        
+        found_files = []
+        
+        for location in search_locations:
+            try:
+                if location.exists():
+                    # Search for exact filename
+                    exact_match = location / filename
+                    if exact_match.exists() and exact_match.is_file():
+                        found_files.append(exact_match)
+                    
+                    # Search for files containing the filename
+                    for file_path in location.glob(f"*{filename}*"):
+                        if file_path.is_file():
+                            found_files.append(file_path)
+                    
+                    # Search recursively in subdirectories (max 2 levels deep)
+                    try:
+                        for file_path in location.rglob(filename):
+                            if file_path.is_file() and len(file_path.parts) - len(location.parts) <= 2:
+                                found_files.append(file_path)
+                    except (PermissionError, OSError):
+                        continue  # Skip inaccessible directories
+                        
+            except (PermissionError, OSError):
+                continue  # Skip inaccessible locations
+        
+        # Remove duplicates
+        unique_files = []
+        seen_paths = set()
+        for file_path in found_files:
+            if str(file_path) not in seen_paths:
+                unique_files.append(file_path)
+                seen_paths.add(str(file_path))
+        
+        # Sort by newest first
+        try:
+            unique_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        except (PermissionError, OSError):
+            pass  # Keep original order if can't get modification times
+        
+        return unique_files[:10]  # Return top 10 matches
+        
     def validate_file_path(self, file_path):
         """Validate that the file path exists and is accessible"""
         try:
