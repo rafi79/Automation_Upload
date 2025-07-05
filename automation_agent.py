@@ -8,7 +8,7 @@ from pathlib import Path
 from PIL import Image
 import requests
 import uuid
-import glob
+import shutil
 
 # Try to import optional dependencies with fallbacks
 try:
@@ -31,13 +31,13 @@ except ImportError:
 
 # Configure Streamlit page
 st.set_page_config(
-    page_title="Auto PDF Analyzer",
+    page_title="Path-Based Auto Uploader",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-class AutoFileSelector:
+class PathBasedUploader:
     def __init__(self):
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AIzaSyDFgcA8F1RD0t0UmMbomQ54dHoGPZRT0ok")
         
@@ -51,73 +51,56 @@ class AutoFileSelector:
         else:
             self.gemini_client = None
             
-        self.analysis_history = []
+        self.upload_history = []
+        self.setup_temp_directory()
         
-    def get_downloads_folder(self):
-        """Get the user's Downloads folder path"""
-        home = Path.home()
-        downloads_paths = [
-            home / "Downloads",
-            home / "Download", 
-            Path("C:/Users") / os.getenv("USERNAME", "") / "Downloads",
-            Path("/Users") / os.getenv("USER", "") / "Downloads"
-        ]
+    def setup_temp_directory(self):
+        """Create temporary directory for processing"""
+        self.temp_dir = Path(tempfile.gettempdir()) / "auto_uploader"
+        self.temp_dir.mkdir(exist_ok=True)
         
-        for path in downloads_paths:
-            if path.exists():
-                return path
-        return home
-        
-    def scan_files(self, folder_path, file_types=["pdf", "png", "jpg", "jpeg"]):
-        """Scan folder for files of specified types"""
-        files = []
-        folder = Path(folder_path)
-        
-        if not folder.exists():
-            return files
+    def validate_file_path(self, file_path):
+        """Validate that the file path exists and is accessible"""
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return False, f"File not found: {file_path}"
+            if not path.is_file():
+                return False, f"Path is not a file: {file_path}"
+            if not os.access(path, os.R_OK):
+                return False, f"File is not readable: {file_path}"
+            return True, "File is valid"
+        except Exception as e:
+            return False, f"Error validating file: {str(e)}"
+    
+    def copy_file_to_temp(self, source_path):
+        """Copy file to temporary directory for processing"""
+        try:
+            source = Path(source_path)
+            temp_filename = f"uploaded_{uuid.uuid4().hex[:8]}_{source.name}"
+            temp_path = self.temp_dir / temp_filename
             
-        for file_type in file_types:
-            pattern = f"*.{file_type}"
-            found_files = list(folder.glob(pattern))
-            files.extend(found_files)
+            shutil.copy2(source, temp_path)
+            return temp_path, None
+        except Exception as e:
+            return None, f"Error copying file: {str(e)}"
+    
+    def get_file_info(self, file_path):
+        """Get file information"""
+        try:
+            path = Path(file_path)
+            stat = path.stat()
             
-        # Sort by modification time (newest first)
-        files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-        return files
-        
-    def filter_files(self, files, keyword="", date_filter="all", file_type="all"):
-        """Filter files based on criteria"""
-        filtered_files = []
-        
-        for file_path in files:
-            # File type filter
-            if file_type != "all":
-                if not file_path.suffix.lower().endswith(file_type.lower()):
-                    continue
-                    
-            # Keyword filter
-            if keyword and keyword.lower() not in file_path.name.lower():
-                continue
-                
-            # Date filter
-            if date_filter != "all":
-                file_time = file_path.stat().st_mtime
-                current_time = time.time()
-                
-                if date_filter == "today":
-                    if current_time - file_time > 86400:  # 24 hours
-                        continue
-                elif date_filter == "week":
-                    if current_time - file_time > 604800:  # 7 days
-                        continue
-                elif date_filter == "month":
-                    if current_time - file_time > 2592000:  # 30 days
-                        continue
-                        
-            filtered_files.append(file_path)
-            
-        return filtered_files
-        
+            return {
+                "name": path.name,
+                "size_mb": stat.st_size / 1024 / 1024,
+                "modified": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime)),
+                "extension": path.suffix.lower(),
+                "type": "PDF" if path.suffix.lower() == ".pdf" else "Image"
+            }
+        except Exception as e:
+            return {"error": str(e)}
+    
     def extract_text_from_pdf(self, pdf_path):
         """Extract text from PDF file"""
         try:
@@ -139,33 +122,85 @@ class AutoFileSelector:
                         text += page.extract_text()
                 return text
                 
-            return "PDF processing not available."
+            return "PDF processing libraries not available."
             
         except Exception as e:
-            return f"Error: {str(e)}"
+            return f"Error extracting text: {str(e)}"
     
-    def analyze_with_gemini(self, content, file_type, analysis_type):
+    def analyze_with_gemini(self, content, file_info, analysis_type):
         """Analyze content with Gemini AI"""
         if not self.gemini_client:
-            return "Gemini AI not available."
+            return "Gemini AI not available. Please check your configuration."
             
         try:
-            if file_type == "pdf":
-                prompt = f"""
-                Analyze this PDF document content:
+            # Create analysis prompt based on file type and analysis type
+            if file_info.get("type") == "PDF":
+                base_prompt = f"""
+                Analyze this PDF document: {file_info['name']}
                 
-                {content[:8000]}
+                Document Content:
+                {content[:10000]}  # Limit to avoid token limits
+                
+                Analysis Type: {analysis_type}
+                """
+            else:
+                base_prompt = f"""
+                Analyze this image file: {file_info['name']}
                 
                 Analysis Type: {analysis_type}
                 
-                Please provide:
-                1. Document summary
-                2. Key information extracted
-                3. Important insights
-                4. Recommendations for automation
+                Please describe what you see and provide insights for automation opportunities.
                 """
-            else:  # image
-                prompt = f"Analyze this image for automation opportunities and describe what you see. Analysis type: {analysis_type}"
+            
+            # Add specific analysis instructions based on type
+            analysis_prompts = {
+                "Document Summary": base_prompt + """
+                
+                Please provide:
+                1. **Document Overview**: What type of document this is
+                2. **Main Content**: Key points and important information
+                3. **Purpose**: What this document is used for
+                4. **Key Details**: Important names, dates, numbers, etc.
+                5. **Summary**: Concise overview of the entire document
+                """,
+                
+                "Key Information Extraction": base_prompt + """
+                
+                Extract and organize:
+                1. **Personal Information**: Names, contact details, addresses
+                2. **Dates and Deadlines**: All dates mentioned in the document
+                3. **Financial Information**: Amounts, prices, costs, salaries
+                4. **Organizations**: Companies, institutions, departments
+                5. **Technical Details**: Specifications, requirements, qualifications
+                6. **Action Items**: Tasks, requirements, next steps
+                
+                Format as a structured list for easy reference.
+                """,
+                
+                "Automation Opportunities": base_prompt + """
+                
+                Identify automation possibilities:
+                1. **Data Entry Tasks**: Information that could be auto-extracted
+                2. **Repetitive Processes**: Tasks that could be automated
+                3. **Document Processing**: How this document type could be handled automatically
+                4. **Integration Opportunities**: Systems this could connect to
+                5. **Workflow Improvements**: How to streamline related processes
+                6. **RoboTask Scripts**: Specific automation recommendations
+                """,
+                
+                "Content Analysis": base_prompt + """
+                
+                Provide detailed analysis:
+                1. **Content Quality**: Writing quality, completeness, clarity
+                2. **Structure Analysis**: How the document is organized
+                3. **Missing Information**: What might be incomplete
+                4. **Improvements**: Suggestions for enhancement
+                5. **Compliance**: Any standard formats or requirements
+                6. **Recommendations**: Next steps or actions needed
+                """
+            }
+            
+            prompt = analysis_prompts.get(analysis_type, base_prompt)
             
             contents = [
                 types.Content(
@@ -184,293 +219,301 @@ class AutoFileSelector:
             
         except Exception as e:
             return f"Analysis error: {str(e)}"
+    
+    def log_upload(self, file_path, analysis_type, success, result_length=0):
+        """Log the upload and analysis"""
+        self.upload_history.append({
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "file_path": str(file_path),
+            "file_name": Path(file_path).name,
+            "analysis_type": analysis_type,
+            "success": success,
+            "result_length": result_length
+        })
 
 @st.cache_resource
-def get_auto_selector():
-    return AutoFileSelector()
+def get_uploader():
+    return PathBasedUploader()
 
 def main():
-    st.title("🤖 Auto PDF/Image Analyzer")
-    st.markdown("**Smart File Selection** - Automatically find and analyze your files")
+    st.title("🤖 Path-Based Auto File Analyzer")
+    st.markdown("**Direct Path Upload** - Specify exact file path for automatic processing")
     
     if not GEMINI_AVAILABLE:
-        st.error("⚠️ Google Gemini AI not available.")
+        st.error("⚠️ Google Gemini AI not available. Please install: pip install google-genai")
         return
     
-    selector = get_auto_selector()
+    uploader = get_uploader()
     
-    # Sidebar for file selection criteria
+    # Sidebar
     with st.sidebar:
-        st.header("🔍 Smart File Finder")
+        st.header("📊 Upload History")
         
-        # Folder selection
-        default_folder = selector.get_downloads_folder()
-        st.write(f"**Scanning Folder:** {default_folder}")
+        if uploader.upload_history:
+            total_uploads = len(uploader.upload_history)
+            successful = len([u for u in uploader.upload_history if u['success']])
+            st.metric("Total Uploads", total_uploads)
+            st.metric("Success Rate", f"{(successful/total_uploads*100):.0f}%")
+            
+            st.subheader("📝 Recent Uploads")
+            for upload in uploader.upload_history[-5:]:
+                st.write(f"**{upload['timestamp']}**")
+                st.write(f"File: {upload['file_name']}")
+                st.write(f"Type: {upload['analysis_type']}")
+                st.write(f"Status: {'✅' if upload['success'] else '❌'}")
+                st.write("---")
+        else:
+            st.info("No uploads yet")
         
-        # File type filter
-        file_type_filter = st.selectbox(
-            "File Type:",
-            ["all", "pdf", "png", "jpg", "jpeg"],
-            help="Filter by file type"
+        st.header("🎯 Quick Paths")
+        st.markdown("""
+        **Example paths:**
+        ```
+        C:\\Users\\Rafi7\\Downloads\\file.pdf
+        C:\\Users\\%USERNAME%\\Downloads\\*.pdf
+        %USERPROFILE%\\Documents\\report.pdf
+        ```
+        """)
+        
+        st.header("🤖 RoboTask Integration")
+        st.markdown("""
+        **Automation Steps:**
+        1. Set file path in text input
+        2. Select analysis type
+        3. Click "AUTO UPLOAD & ANALYZE"
+        4. Get results automatically
+        5. Download analysis report
+        """)
+    
+    # Main content
+    st.header("📁 Direct File Path Upload")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("🎯 Specify File Path")
+        
+        # File path input
+        file_path_input = st.text_input(
+            "Enter full file path:",
+            placeholder="C:\\Users\\Rafi7\\Downloads\\Fathea Jannat Ayrin_Cover Letter_UIU.pdf",
+            help="Enter the complete path to your file"
         )
         
-        # Keyword filter
-        keyword_filter = st.text_input(
-            "Keyword Filter:",
-            placeholder="e.g., invoice, report, letter",
-            help="Find files containing this word in filename"
-        )
+        # Quick path suggestions
+        st.markdown("**Quick Fill Options:**")
+        col_a, col_b, col_c = st.columns(3)
         
-        # Date filter
-        date_filter = st.selectbox(
-            "Date Filter:",
-            ["all", "today", "week", "month"],
-            help="Filter by file modification date"
-        )
+        with col_a:
+            if st.button("📁 Downloads Folder"):
+                downloads_path = str(Path.home() / "Downloads")
+                st.session_state.suggested_path = downloads_path
+                
+        with col_b:
+            if st.button("📄 Documents Folder"):
+                docs_path = str(Path.home() / "Documents")
+                st.session_state.suggested_path = docs_path
+                
+        with col_c:
+            if st.button("🖥️ Desktop"):
+                desktop_path = str(Path.home() / "Desktop")
+                st.session_state.suggested_path = desktop_path
         
-        # Analysis type
+        # Show suggested path
+        if hasattr(st.session_state, 'suggested_path'):
+            st.info(f"💡 Suggested path: {st.session_state.suggested_path}")
+        
+        # Analysis type selection
         analysis_type = st.selectbox(
-            "Analysis Type:",
+            "Select Analysis Type:",
             [
                 "Document Summary",
                 "Key Information Extraction",
                 "Automation Opportunities", 
-                "Data Processing"
-            ]
+                "Content Analysis"
+            ],
+            help="Choose what type of analysis you want"
         )
         
-        st.markdown("---")
-        st.subheader("🎯 Quick Filters")
-        if st.button("📄 Latest PDFs"):
-            st.session_state.quick_filter = "latest_pdfs"
-        if st.button("📊 Invoice Files"):
-            st.session_state.quick_filter = "invoices"
-        if st.button("📝 Cover Letters"):
-            st.session_state.quick_filter = "cover_letters"
-        if st.button("🖼️ Recent Images"):
-            st.session_state.quick_filter = "recent_images"
-    
-    # Main content
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.header("📁 Smart File Selection")
-        
-        # Apply quick filters
-        if hasattr(st.session_state, 'quick_filter'):
-            if st.session_state.quick_filter == "latest_pdfs":
-                file_type_filter = "pdf"
-                date_filter = "today"
-                keyword_filter = ""
-            elif st.session_state.quick_filter == "invoices":
-                file_type_filter = "pdf"
-                keyword_filter = "invoice"
-            elif st.session_state.quick_filter == "cover_letters":
-                file_type_filter = "pdf"
-                keyword_filter = "cover"
-            elif st.session_state.quick_filter == "recent_images":
-                file_type_filter = "png"
-                date_filter = "week"
-        
-        # Scan and filter files
-        if st.button("🔍 **SCAN & AUTO-SELECT FILES**", type="primary", use_container_width=True):
-            with st.spinner("🔍 Scanning Downloads folder..."):
-                # Get all files
-                all_files = selector.scan_files(default_folder)
+        # File validation and processing
+        if file_path_input:
+            # Validate file path
+            is_valid, validation_message = uploader.validate_file_path(file_path_input)
+            
+            if is_valid:
+                # Show file info
+                file_info = uploader.get_file_info(file_path_input)
                 
-                # Apply filters
-                filtered_files = selector.filter_files(
-                    all_files, 
-                    keyword_filter, 
-                    date_filter, 
-                    file_type_filter
-                )
-                
-                if filtered_files:
-                    st.success(f"✅ Found {len(filtered_files)} matching files!")
+                if "error" not in file_info:
+                    st.success("✅ File found and accessible!")
                     
-                    # Display found files
-                    st.subheader("📋 Found Files")
+                    # Display file information
+                    info_col1, info_col2, info_col3 = st.columns(3)
+                    with info_col1:
+                        st.metric("File Name", file_info['name'])
+                    with info_col2:
+                        st.metric("Size", f"{file_info['size_mb']:.2f} MB")
+                    with info_col3:
+                        st.metric("Type", file_info['type'])
                     
-                    for i, file_path in enumerate(filtered_files[:5]):  # Show top 5
-                        file_size = file_path.stat().st_size / 1024 / 1024  # MB
-                        file_time = time.strftime('%Y-%m-%d %H:%M', time.localtime(file_path.stat().st_mtime))
-                        
-                        col_a, col_b, col_c = st.columns([3, 1, 1])
-                        with col_a:
-                            st.write(f"**{file_path.name}**")
-                        with col_b:
-                            st.write(f"{file_size:.1f} MB")
-                        with col_c:
-                            st.write(file_time)
+                    st.write(f"**Last Modified:** {file_info['modified']}")
+                    
+                    # Big auto upload and analyze button
+                    if st.button("🚀 **AUTO UPLOAD & ANALYZE**", type="primary", use_container_width=True):
+                        with st.spinner("🤖 Processing file automatically..."):
                             
-                        # Auto-analyze button for each file
-                        if st.button(f"🤖 Analyze", key=f"analyze_{i}", use_container_width=True):
-                            with st.spinner(f"🤖 Analyzing {file_path.name}..."):
+                            # Progress indicators
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            # Step 1: Copy file to temp directory
+                            status_text.text("📂 Copying file for processing...")
+                            progress_bar.progress(20)
+                            
+                            temp_file_path, copy_error = uploader.copy_file_to_temp(file_path_input)
+                            
+                            if copy_error:
+                                st.error(f"❌ File copy failed: {copy_error}")
+                                return
+                            
+                            # Step 2: Extract content if PDF
+                            status_text.text("📄 Extracting content...")
+                            progress_bar.progress(40)
+                            
+                            if file_info['type'] == "PDF":
+                                content = uploader.extract_text_from_pdf(temp_file_path)
+                            else:
+                                content = f"Image file: {file_info['name']}"
+                            
+                            # Step 3: Analyze with Gemini AI
+                            status_text.text("🤖 Analyzing with Gemini AI...")
+                            progress_bar.progress(60)
+                            
+                            analysis_result = uploader.analyze_with_gemini(content, file_info, analysis_type)
+                            
+                            # Step 4: Process results
+                            status_text.text("📝 Preparing results...")
+                            progress_bar.progress(80)
+                            
+                            # Step 5: Complete
+                            progress_bar.progress(100)
+                            status_text.text("✅ Analysis complete!")
+                            
+                            # Clear progress indicators
+                            time.sleep(1)
+                            progress_bar.empty()
+                            status_text.empty()
+                            
+                            # Show results
+                            if analysis_result and not analysis_result.startswith("Error"):
+                                st.success("🎉 **Analysis Completed Successfully!**")
                                 
-                                # Process file based on type
-                                if file_path.suffix.lower() == '.pdf':
-                                    content = selector.extract_text_from_pdf(file_path)
-                                    file_type = "pdf"
-                                else:
-                                    # For images, we'd process differently
-                                    content = f"Image file: {file_path.name}"
-                                    file_type = "image"
-                                
-                                # Analyze with Gemini
-                                analysis_result = selector.analyze_with_gemini(
-                                    content, file_type, analysis_type
-                                )
-                                
-                                # Show results
+                                # Display results
                                 st.markdown("### 📊 Analysis Results")
                                 st.markdown("---")
                                 st.markdown(analysis_result)
                                 st.markdown("---")
                                 
-                                # Download results
+                                # Create download filename
                                 timestamp = int(time.time())
-                                result_filename = f"analysis_{file_path.stem}_{timestamp}.txt"
+                                safe_filename = "".join(c for c in file_info['name'] if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                                download_filename = f"analysis_{safe_filename}_{timestamp}.txt"
                                 
+                                # Download button
                                 st.download_button(
-                                    label="💾 Download Analysis",
+                                    label="💾 **Download Analysis Report**",
                                     data=analysis_result,
-                                    file_name=result_filename,
+                                    file_name=download_filename,
                                     mime="text/plain",
                                     use_container_width=True
                                 )
                                 
-                                # Log analysis
-                                selector.analysis_history.append({
-                                    "file": file_path.name,
-                                    "analysis_type": analysis_type,
-                                    "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-                                    "success": True
-                                })
+                                # Log the successful upload
+                                uploader.log_upload(file_path_input, analysis_type, True, len(analysis_result))
                                 
+                                # Celebration
                                 st.balloons()
-                                st.success("🎉 Analysis Complete!")
+                                
+                                # Cleanup temp file
+                                if temp_file_path and temp_file_path.exists():
+                                    temp_file_path.unlink(missing_ok=True)
+                                    
+                            else:
+                                st.error(f"❌ Analysis failed: {analysis_result}")
+                                uploader.log_upload(file_path_input, analysis_type, False)
+                
                 else:
-                    st.warning("No files found matching your criteria. Try adjusting the filters.")
+                    st.error(f"❌ {file_info['error']}")
+            else:
+                st.error(f"❌ {validation_message}")
         
-        # Manual file upload fallback
-        st.markdown("---")
-        st.subheader("📤 Manual Upload (Fallback)")
-        uploaded_file = st.file_uploader("Or upload a file manually", type=['pdf', 'png', 'jpg', 'jpeg'])
-        
-        if uploaded_file:
-            st.info(f"📁 Uploaded: {uploaded_file.name}")
-            
-            if st.button("🔍 Analyze Uploaded File", use_container_width=True):
-                with st.spinner("🤖 Analyzing uploaded file..."):
-                    
-                    # Save uploaded file temporarily
-                    temp_path = Path(tempfile.gettempdir()) / f"temp_{uuid.uuid4().hex[:8]}_{uploaded_file.name}"
-                    with open(temp_path, "wb") as f:
-                        f.write(uploaded_file.read())
-                    
-                    # Process based on file type
-                    if uploaded_file.type == "application/pdf":
-                        content = selector.extract_text_from_pdf(temp_path)
-                        file_type = "pdf"
-                    else:
-                        content = f"Image file: {uploaded_file.name}"
-                        file_type = "image"
-                    
-                    # Analyze
-                    analysis_result = selector.analyze_with_gemini(content, file_type, analysis_type)
-                    
-                    # Show results
-                    st.markdown("### 📊 Analysis Results")
-                    st.markdown(analysis_result)
-                    
-                    # Download button
-                    st.download_button(
-                        label="💾 Download Analysis",
-                        data=analysis_result,
-                        file_name=f"analysis_{uploaded_file.name}_{int(time.time())}.txt",
-                        mime="text/plain"
-                    )
-                    
-                    # Cleanup
-                    temp_path.unlink(missing_ok=True)
+        # Text preview section for PDFs
+        if file_path_input and st.button("👁️ Preview Text Content"):
+            is_valid, _ = uploader.validate_file_path(file_path_input)
+            if is_valid:
+                file_info = uploader.get_file_info(file_path_input)
+                if file_info.get('type') == 'PDF':
+                    with st.spinner("Extracting text preview..."):
+                        text_content = uploader.extract_text_from_pdf(file_path_input)
+                        if text_content and not text_content.startswith("Error"):
+                            preview = text_content[:2000] + "..." if len(text_content) > 2000 else text_content
+                            st.text_area("Text Preview", preview, height=200)
+                        else:
+                            st.error(f"Could not extract text: {text_content}")
+                else:
+                    st.info("Text preview only available for PDF files")
     
     with col2:
-        st.subheader("🎯 Smart Selection")
+        st.subheader("ℹ️ How It Works")
         st.markdown("""
-        **How it works:**
-        1. 🔍 Scans your Downloads folder
-        2. 🎯 Filters by your criteria
-        3. 📋 Shows matching files
-        4. 🤖 Analyzes with one click
-        5. 💾 Downloads results
+        **🎯 Direct Path Processing:**
+        1. Enter complete file path
+        2. System validates file exists
+        3. File copied for processing
+        4. Content extracted (if PDF)
+        5. Gemini AI analyzes content
+        6. Results displayed instantly
+        7. Download analysis report
         
-        **Filter Options:**
-        - **File Type**: PDF, images, or all
-        - **Keywords**: Find specific files
-        - **Date**: Recent files only
-        - **Quick Filters**: Common searches
+        **📁 Supported Paths:**
+        - Absolute paths: `C:\\Users\\...`
+        - Environment variables: `%USERPROFILE%`
+        - Network paths: `\\\\server\\share`
         
-        **Example Searches:**
-        - "invoice" + PDF = Find all invoice PDFs
-        - "today" + all = Today's downloads
-        - "cover" + PDF = Cover letters
+        **🔧 File Types:**
+        - ✅ PDF documents
+        - ✅ PNG images
+        - ✅ JPG/JPEG images
         """)
         
-        st.subheader("📊 Analysis History")
-        if selector.analysis_history:
-            for analysis in selector.analysis_history[-3:]:
-                st.write(f"**{analysis['timestamp']}**")
-                st.write(f"File: {analysis['file']}")
-                st.write(f"Type: {analysis['analysis_type']}")
-                st.write("✅ Success" if analysis['success'] else "❌ Failed")
-                st.write("---")
-        else:
-            st.info("No analyses completed yet")
-    
-    # RoboTask Instructions
-    st.markdown("---")
-    st.header("🤖 RoboTask Automation Setup")
-    
-    col_a, col_b = st.columns(2)
-    
-    with col_a:
-        st.markdown("""
-        **RoboTask Script:**
-        ```
-        1. Open Browser → This URL
-        2. Set filters in sidebar:
-           - File type: pdf
-           - Keyword: invoice (or whatever you want)
-           - Date: today
-        3. Click "SCAN & AUTO-SELECT FILES"
-        4. Click "Analyze" on desired file
-        5. Wait for results
-        6. Download analysis
-        ```
+        st.subheader("🤖 RoboTask Script")
+        st.code("""
+# RoboTask Actions:
+1. Open Browser → This App URL
+2. Send Keys → File path
+3. Select → Analysis type
+4. Click → AUTO UPLOAD & ANALYZE
+5. Wait → For completion
+6. Click → Download button
         """)
-    
-    with col_b:
+        
+        st.subheader("⚡ Benefits")
         st.markdown("""
-        **Automation Benefits:**
         - ✅ No manual file browsing
-        - ✅ Smart file filtering
-        - ✅ Batch processing ready
-        - ✅ Automatic analysis
-        - ✅ Results download
-        
-        **Use Cases:**
-        - Process daily invoices
-        - Analyze cover letters
-        - Review contracts
-        - Extract data from forms
+        - ✅ Direct path specification
+        - ✅ Automatic processing
+        - ✅ Instant AI analysis
+        - ✅ One-click download
+        - ✅ Perfect for automation
         """)
     
     # Footer
     st.markdown("---")
     st.markdown("""
-    <div style='text-align: center; color: #666;'>
-        <p><strong>🤖 Auto PDF/Image Analyzer</strong> | Smart file selection + Gemini AI analysis</p>
+    <div style='text-align: center; color: #666; padding: 20px;'>
+        <h4>🤖 Path-Based Auto File Analyzer</h4>
+        <p>Specify file path → Automatic upload → Gemini AI analysis → Download results</p>
+        <p><strong>Perfect for RoboTask automation!</strong></p>
     </div>
     """, unsafe_allow_html=True)
 
