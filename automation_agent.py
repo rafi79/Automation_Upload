@@ -10,6 +10,7 @@ import requests
 import uuid
 import shutil
 import platform
+import string
 
 # Try to import optional dependencies with fallbacks
 try:
@@ -60,65 +61,150 @@ class AutoFileAnalyzer:
         self.temp_dir = Path(tempfile.gettempdir()) / "auto_analyzer"
         self.temp_dir.mkdir(exist_ok=True)
         
-    def search_for_file(self, filename):
-        """Search for a file in common locations"""
+    def search_for_file(self, filename, max_results=50, deep_search=False):
+        """Search for a file across the entire computer with enhanced options"""
         search_locations = []
+        found_files = []
         
         # For cloud/server environment, create dummy search locations
         if platform.system() == "Linux":
-            # This is likely Streamlit Cloud - create safe mock locations
-            search_locations = [
-                Path("/tmp/mock_downloads"),
-                Path("/tmp/mock_documents"),
-            ]
-        else:
-            # Local Windows/Mac environment
+            # Check if we're in a cloud environment
+            if os.path.exists("/tmp/mock_downloads"):
+                # This is likely Streamlit Cloud - create safe mock locations
+                search_locations = [
+                    Path("/tmp/mock_downloads"),
+                    Path("/tmp/mock_documents"),
+                ]
+            else:
+                # Full Linux system search
+                search_locations = [
+                    Path("/home"),
+                    Path("/usr"),
+                    Path("/opt"),
+                    Path("/var"),
+                    Path("/tmp"),
+                ]
+                if deep_search:
+                    search_locations.insert(0, Path("/"))  # Root directory for deep search
+        
+        elif platform.system() == "Windows":
+            # Windows - search all drives and common locations
+            available_drives = []
+            for letter in string.ascii_uppercase:
+                drive_path = Path(f"{letter}:/")
+                if drive_path.exists():
+                    available_drives.append(drive_path)
+            
+            # Start with user-specific locations for faster results
+            username = os.getenv("USERNAME", "")
+            if username:
+                search_locations = [
+                    Path("C:/Users") / username / "Downloads",
+                    Path("C:/Users") / username / "Downloads" / "Telegram Desktop",
+                    Path("C:/Users") / username / "Documents",
+                    Path("C:/Users") / username / "Desktop",
+                    Path("C:/Users") / username,
+                ]
+            
+            # Add system-wide locations
+            search_locations.extend([
+                Path("C:/Users"),
+                Path("C:/Program Files"),
+                Path("C:/Program Files (x86)"),
+                Path("C:/ProgramData"),
+                Path("C:/Temp"),
+                Path("C:/Windows/Temp"),
+            ])
+            
+            # Add all drives for comprehensive search
+            if deep_search:
+                search_locations.extend(available_drives)
+        
+        elif platform.system() == "Darwin":  # macOS
             search_locations = [
                 Path.home() / "Downloads",
-                Path.home() / "Downloads" / "Telegram Desktop", 
                 Path.home() / "Documents",
                 Path.home() / "Desktop",
+                Path.home(),
+                Path("/Applications"),
+                Path("/Users"),
+                Path("/tmp"),
             ]
-            
-            # Add Windows-specific paths
-            if platform.system() == "Windows":
-                username = os.getenv("USERNAME", "")
-                if username:
-                    search_locations.extend([
-                        Path("C:/Users") / username / "Downloads",
-                        Path("C:/Users") / username / "Downloads" / "Telegram Desktop",
-                        Path("C:/Users") / username / "Documents",
-                        Path("C:/Users") / username / "Desktop"
-                    ])
+            if deep_search:
+                search_locations.extend([
+                    Path("/"),
+                    Path("/System"),
+                    Path("/Library"),
+                    Path("/var"),
+                    Path("/usr"),
+                ])
         
-        found_files = []
+        else:
+            # Fallback for other systems
+            search_locations = [
+                Path.home(),
+                Path("/tmp") if Path("/tmp").exists() else Path(tempfile.gettempdir()),
+            ]
+            if deep_search:
+                search_locations.insert(0, Path("/"))
         
-        for location in search_locations:
+        # Progress tracking
+        progress_placeholder = st.empty()
+        total_locations = len(search_locations)
+        
+        for idx, location in enumerate(search_locations):
             try:
                 if location.exists():
+                    # Update progress
+                    progress_placeholder.text(f"🔍 Searching in: {location} ({idx+1}/{total_locations})")
+                    
                     # Search for exact filename
                     exact_match = location / filename
                     if exact_match.exists() and exact_match.is_file():
                         found_files.append(exact_match)
                     
-                    # Search for files containing the filename
+                    # Search for files containing the filename (recursive)
                     try:
-                        for file_path in location.glob(f"*{filename}*"):
-                            if file_path.is_file():
-                                found_files.append(file_path)
-                    except (PermissionError, OSError):
-                        continue
-                    
-                    # Search recursively in subdirectories (max 2 levels deep)
-                    try:
-                        for file_path in location.rglob(filename):
-                            if file_path.is_file() and len(file_path.parts) - len(location.parts) <= 2:
-                                found_files.append(file_path)
-                    except (PermissionError, OSError):
+                        if deep_search:
+                            # Deep recursive search
+                            for file_path in location.rglob(f"*{filename}*"):
+                                if file_path.is_file():
+                                    found_files.append(file_path)
+                                    
+                                # Limit results to prevent overwhelming output
+                                if len(found_files) >= max_results:
+                                    break
+                        else:
+                            # Limited depth search (max 3 levels)
+                            for file_path in location.glob(f"*{filename}*"):
+                                if file_path.is_file():
+                                    found_files.append(file_path)
+                            
+                            # Search 2 levels deep
+                            try:
+                                for file_path in location.glob(f"*/*{filename}*"):
+                                    if file_path.is_file():
+                                        found_files.append(file_path)
+                                for file_path in location.glob(f"*/*/*{filename}*"):
+                                    if file_path.is_file():
+                                        found_files.append(file_path)
+                            except (PermissionError, OSError):
+                                continue
+                                
+                    except (PermissionError, OSError) as e:
+                        st.warning(f"⚠️ Permission denied: {location}")
                         continue
                         
-            except (PermissionError, OSError):
+                # Break if we have enough results and not doing deep search
+                if not deep_search and len(found_files) >= 20:
+                    break
+                    
+            except (PermissionError, OSError) as e:
+                st.warning(f"⚠️ Cannot access: {location}")
                 continue
+        
+        # Clear progress indicator
+        progress_placeholder.empty()
         
         # Remove duplicates
         unique_files = []
@@ -134,7 +220,43 @@ class AutoFileAnalyzer:
         except (PermissionError, OSError):
             pass
         
-        return unique_files[:10]
+        return unique_files[:max_results]
+    
+    def search_by_extension(self, extension, max_results=50):
+        """Search for files by extension across the entire system"""
+        found_files = []
+        
+        if platform.system() == "Windows":
+            # Search all Windows drives
+            for letter in string.ascii_uppercase:
+                drive_path = Path(f"{letter}:/")
+                if drive_path.exists():
+                    try:
+                        for file_path in drive_path.rglob(f"*.{extension}"):
+                            if file_path.is_file():
+                                found_files.append(file_path)
+                                
+                                if len(found_files) >= max_results:
+                                    return found_files
+                                    
+                    except (PermissionError, OSError):
+                        continue
+        
+        else:
+            # Unix-like systems
+            try:
+                search_root = Path("/home") if Path("/home").exists() else Path.home()
+                for file_path in search_root.rglob(f"*.{extension}"):
+                    if file_path.is_file():
+                        found_files.append(file_path)
+                        
+                        if len(found_files) >= max_results:
+                            return found_files
+                            
+            except (PermissionError, OSError):
+                pass
+        
+        return found_files
         
     def validate_file_path(self, file_path):
         """Validate that the file path exists and is accessible"""
@@ -326,7 +448,7 @@ def get_analyzer():
 
 def main():
     st.title("🤖 Auto File Analyzer with Gemini AI")
-    st.markdown("**Smart File Processing** - Upload by path or search by filename")
+    st.markdown("**Smart File Processing** - Enhanced with Full Computer Search")
     
     if not GEMINI_AVAILABLE:
         st.error("⚠️ Google Gemini AI not available. Please install: pip install google-genai")
@@ -359,6 +481,14 @@ def main():
         else:
             st.info("No analyses completed yet")
         
+        st.header("🔍 Search Options")
+        st.markdown("""
+        **🎯 Search Modes:**
+        - **Quick Search**: Common locations
+        - **Deep Search**: Entire computer
+        - **Extension Search**: Find by file type
+        """)
+        
         st.header("🤖 RoboTask Ready")
         st.markdown("""
         **Automation Steps:**
@@ -371,7 +501,7 @@ def main():
         """)
     
     # Main content
-    st.header("📁 Smart File Processing")
+    st.header("📁 Enhanced File Processing")
     
     col1, col2 = st.columns([2, 1])
     
@@ -386,13 +516,29 @@ def main():
             help="Enter the complete path to your file"
         )
         
-        # Method 2: Filename search
-        st.markdown("**Method 2: Search by Filename (Easier!)**")
-        filename_only = st.text_input(
-            "Just the filename:",
-            placeholder="IQAC.pdf",
-            help="Enter just the filename - we'll search for it automatically"
-        )
+        # Method 2: Enhanced filename search
+        st.markdown("**Method 2: Enhanced Filename Search**")
+        
+        search_col1, search_col2 = st.columns([3, 1])
+        
+        with search_col1:
+            filename_only = st.text_input(
+                "Just the filename:",
+                placeholder="IQAC.pdf",
+                help="Enter just the filename - we'll search for it automatically"
+            )
+        
+        with search_col2:
+            deep_search = st.checkbox("🔍 Deep Search", help="Search entire computer (slower)")
+        
+        # Search options
+        search_options_col1, search_options_col2 = st.columns(2)
+        
+        with search_options_col1:
+            max_results = st.selectbox("Max Results:", [10, 25, 50, 100], index=1)
+        
+        with search_options_col2:
+            search_extension = st.text_input("Search by extension:", placeholder="pdf", help="Leave empty to search by filename")
         
         # Analysis type selection
         analysis_type = st.selectbox(
@@ -408,45 +554,96 @@ def main():
         # File processing logic
         selected_file_path = None
         
+        # Process extension search
+        if search_extension and st.button("🔍 Search by Extension", type="secondary"):
+            with st.spinner(f"Searching for .{search_extension} files..."):
+                found_files = analyzer.search_by_extension(search_extension, max_results)
+                
+                if found_files:
+                    st.success(f"✅ Found {len(found_files)} .{search_extension} files!")
+                    
+                    # Display found files
+                    st.subheader("📁 Found Files")
+                    for i, file_path in enumerate(found_files):
+                        file_info = analyzer.get_file_info(file_path)
+                        
+                        with st.expander(f"📄 {file_info['name']} ({file_info['size_mb']:.2f} MB)"):
+                            st.write(f"**📁 Path:** {file_path}")
+                            st.write(f"**📅 Modified:** {file_info['modified']}")
+                            
+                            if st.button(f"✅ Use This File", key=f"use_ext_file_{i}"):
+                                st.session_state.selected_file = str(file_path)
+                                st.session_state.selected_file_info = file_info
+                                st.rerun()
+                else:
+                    st.error(f"❌ No .{search_extension} files found")
+        
         # Process filename search
-        if filename_only and not file_path_input:
-            if st.button("🔍 Search for File", type="primary"):
-                with st.spinner(f"Searching for {filename_only}..."):
-                    # For cloud environment, simulate finding the file
-                    st.success("✅ Found matching file!")
-                    
-                    # Create file info based on filename
-                    simulated_file_info = {
-                        "name": filename_only,
-                        "size_mb": 0.5,
-                        "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
-                        "type": "PDF" if filename_only.lower().endswith('.pdf') else "Image"
-                    }
-                    
-                    # Store in session state
-                    st.session_state.selected_file = f"/simulated/downloads/{filename_only}"
-                    st.session_state.selected_file_info = simulated_file_info
-                    st.rerun()  # Refresh to show the analysis section
+        elif filename_only and not file_path_input:
+            search_button_col1, search_button_col2 = st.columns(2)
+            
+            with search_button_col1:
+                if st.button("🔍 Quick Search", type="primary"):
+                    with st.spinner(f"Searching for {filename_only}..."):
+                        found_files = analyzer.search_for_file(filename_only, max_results, deep_search=False)
+                        
+                        if found_files:
+                            st.success(f"✅ Found {len(found_files)} matching files!")
+                            
+                            # Display found files
+                            st.subheader("📁 Found Files")
+                            for i, file_path in enumerate(found_files):
+                                file_info = analyzer.get_file_info(file_path)
+                                
+                                with st.expander(f"📄 {file_info['name']} ({file_info['size_mb']:.2f} MB)"):
+                                    st.write(f"**📁 Path:** {file_path}")
+                                    st.write(f"**📅 Modified:** {file_info['modified']}")
+                                    
+                                    if st.button(f"✅ Use This File", key=f"use_file_{i}"):
+                                        st.session_state.selected_file = str(file_path)
+                                        st.session_state.selected_file_info = file_info
+                                        st.rerun()
+                        else:
+                            st.warning("❌ No files found in quick search. Try Deep Search for comprehensive results.")
+            
+            with search_button_col2:
+                if st.button("🔍 Deep Search", type="secondary"):
+                    with st.spinner(f"Deep searching for {filename_only}... This may take a while..."):
+                        found_files = analyzer.search_for_file(filename_only, max_results, deep_search=True)
+                        
+                        if found_files:
+                            st.success(f"✅ Deep search found {len(found_files)} matching files!")
+                            
+                            # Display found files
+                            st.subheader("📁 Found Files")
+                            for i, file_path in enumerate(found_files):
+                                file_info = analyzer.get_file_info(file_path)
+                                
+                                with st.expander(f"📄 {file_info['name']} ({file_info['size_mb']:.2f} MB)"):
+                                    st.write(f"**📁 Path:** {file_path}")
+                                    st.write(f"**📅 Modified:** {file_info['modified']}")
+                                    
+                                    if st.button(f"✅ Use This File", key=f"use_deep_file_{i}"):
+                                        st.session_state.selected_file = str(file_path)
+                                        st.session_state.selected_file_info = file_info
+                                        st.rerun()
+                        else:
+                            st.error(f"❌ No files found even with deep search")
         
         # Process full path
         elif file_path_input:
             if st.button("✅ Validate File Path", type="primary"):
-                # For cloud environment, simulate validation
-                st.success("✅ File path validated!")
+                is_valid, message, validated_path = analyzer.validate_file_path(file_path_input)
                 
-                # Create simulated file info
-                filename = Path(file_path_input).name
-                simulated_file_info = {
-                    "name": filename,
-                    "size_mb": 0.5,
-                    "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
-                    "type": "PDF" if filename.lower().endswith('.pdf') else "Image"
-                }
-                
-                # Store in session state
-                st.session_state.selected_file = file_path_input
-                st.session_state.selected_file_info = simulated_file_info
-                st.rerun()  # Refresh to show analysis section
+                if is_valid:
+                    st.success(f"✅ {message}")
+                    
+                    file_info = analyzer.get_file_info(validated_path)
+                    st.session_state.selected_file = validated_path
+                    st.session_state.selected_file_info = file_info
+                    st.rerun()
+                else:
+                    st.error(f"❌ {message}")
         
         # Show selected file and analysis section
         if hasattr(st.session_state, 'selected_file') and hasattr(st.session_state, 'selected_file_info'):
@@ -503,53 +700,21 @@ def main():
                     status_text.text("📖 Extracting content...")
                     progress_bar.progress(40)
                     
-                    # Create content for analysis
-                    if file_info['type'] == "PDF":
-                        if selected_file_path.startswith("/simulated/"):
-                            # Simulated content for demo (you can customize this)
-                            if "cover" in file_info['name'].lower():
-                                content = """
-                                Dear Hiring Manager,
-                                
-                                I am writing to express my strong interest in the position at your organization. 
-                                With my background in computer science and experience in software development, 
-                                I believe I would be a valuable addition to your team.
-                                
-                                My qualifications include:
-                                - Bachelor's degree in Computer Science
-                                - 3+ years of experience in Python and web development
-                                - Strong problem-solving and analytical skills
-                                - Experience with machine learning and AI technologies
-                                
-                                I am excited about the opportunity to contribute to your organization and would 
-                                welcome the chance to discuss how my skills align with your needs.
-                                
-                                Sincerely,
-                                [Your Name]
-                                """
-                            elif "iqac" in file_info['name'].lower():
-                                content = """
-                                Internal Quality Assurance Cell (IQAC) Document
-                                
-                                This document outlines the quality assurance procedures and standards 
-                                for academic institutions. It includes:
-                                
-                                1. Quality benchmarks and indicators
-                                2. Assessment methodologies
-                                3. Continuous improvement processes
-                                4. Stakeholder feedback mechanisms
-                                5. Documentation and reporting requirements
-                                
-                                The IQAC ensures that all academic and administrative processes 
-                                meet the required quality standards and contribute to institutional excellence.
-                                """
-                            else:
-                                content = f"This is a simulated analysis of {file_info['name']}. The document contains relevant information that would be analyzed by Gemini AI in a real environment."
-                        else:
-                            # Real file processing would happen here
+                    # Extract content from the actual file
+                    try:
+                        if file_info['type'] == "PDF":
                             content = analyzer.extract_text_from_pdf(selected_file_path)
-                    else:
-                        content = f"Image analysis for {file_info['name']}. This would include visual content analysis in a real environment."
+                            if not content or len(content.strip()) == 0:
+                                content = f"PDF file: {file_info['name']} - Content extraction may require different PDF processing method."
+                        else:
+                            # For image files or other types
+                            content = f"File: {file_info['name']} - Image/document analysis based on filename and properties."
+                    except Exception as e:
+                        content = f"Error extracting content from {file_info['name']}: {str(e)}"
+                        st.warning(f"⚠️ Content extraction issue: {str(e)}")
+                    
+                    if len(content.strip()) == 0:
+                        content = f"File: {file_info['name']} - Ready for analysis based on file properties and metadata."
                     
                     progress_bar.progress(60)
                     status_text.text("🤖 Sending to Gemini AI...")
@@ -648,7 +813,7 @@ Generated by Auto File Analyzer with Gemini AI
         # Manual file upload fallback
         st.markdown("---")
         st.subheader("📤 Manual Upload (Alternative)")
-        uploaded_file = st.file_uploader("Upload file directly", type=['pdf', 'png', 'jpg', 'jpeg'])
+        uploaded_file = st.file_uploader("Upload file directly", type=['pdf', 'png', 'jpg', 'jpeg', 'txt', 'docx'])
         
         if uploaded_file:
             st.success(f"📁 Uploaded: {uploaded_file.name}")
@@ -659,34 +824,69 @@ Generated by Auto File Analyzer with Gemini AI
                     file_info = {
                         "name": uploaded_file.name,
                         "size_mb": len(uploaded_file.getvalue()) / 1024 / 1024,
-                        "type": "PDF" if uploaded_file.type == "application/pdf" else "Image"
+                        "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
+                        "extension": Path(uploaded_file.name).suffix.lower(),
+                        "type": "PDF" if uploaded_file.type == "application/pdf" else "Document"
                     }
                     
                     # Save and process file
                     temp_path = analyzer.temp_dir / f"uploaded_{uuid.uuid4().hex[:8]}_{uploaded_file.name}"
                     with open(temp_path, "wb") as f:
-                        f.write(uploaded_file.read())
+                        f.write(uploaded_file.getvalue())
                     
                     # Extract content
-                    if file_info['type'] == "PDF":
-                        content = analyzer.extract_text_from_pdf(temp_path)
-                    else:
-                        content = f"Image file: {uploaded_file.name}"
+                    try:
+                        if file_info['type'] == "PDF":
+                            content = analyzer.extract_text_from_pdf(temp_path)
+                        else:
+                            content = f"Uploaded file: {uploaded_file.name} - Document analysis based on filename and properties."
+                    except Exception as e:
+                        content = f"Error processing uploaded file: {str(e)}"
                     
                     # Analyze
                     analysis_result = analyzer.analyze_with_gemini(content, file_info, analysis_type)
                     
                     # Show results
-                    if analysis_result:
+                    if analysis_result and not analysis_result.startswith("Error"):
+                        st.success("🎉 **Upload Analysis Completed!**")
                         st.markdown("### 📊 Analysis Results")
+                        st.markdown("---")
                         st.markdown(analysis_result)
                         
+                        # Download option
+                        timestamp = int(time.time())
+                        safe_filename = "".join(c for c in uploaded_file.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                        download_filename = f"analysis_{safe_filename}_{timestamp}.txt"
+                        
+                        download_content = f"""
+GEMINI AI ANALYSIS REPORT
+========================
+
+File: {uploaded_file.name}
+Analysis Type: {analysis_type}
+Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}
+File Size: {file_info['size_mb']:.2f} MB
+
+ANALYSIS RESULTS:
+{analysis_result}
+
+---
+Generated by Auto File Analyzer with Gemini AI
+                        """
+                        
                         st.download_button(
-                            label="💾 Download Analysis",
-                            data=analysis_result,
-                            file_name=f"analysis_{uploaded_file.name}_{int(time.time())}.txt",
-                            mime="text/plain"
+                            label="💾 Download Analysis Report",
+                            data=download_content,
+                            file_name=download_filename,
+                            mime="text/plain",
+                            key="download_upload_results"
                         )
+                        
+                        # Log success
+                        analyzer.log_analysis(str(temp_path), analysis_type, True, len(analysis_result))
+                    else:
+                        st.error(f"❌ Upload analysis failed: {analysis_result}")
+                        analyzer.log_analysis(str(temp_path), analysis_type, False)
                     
                     # Cleanup
                     temp_path.unlink(missing_ok=True)
@@ -694,7 +894,7 @@ Generated by Auto File Analyzer with Gemini AI
     with col2:
         st.subheader("ℹ️ How It Works")
         st.markdown("""
-        **🎯 Two Methods:**
+        **🎯 Three Methods:**
         
         **Method 1: Full Path**
         - Enter complete file path
@@ -703,22 +903,30 @@ Generated by Auto File Analyzer with Gemini AI
         
         **Method 2: Filename Search**
         - Enter just the filename
-        - System searches common folders
+        - Quick search: Common folders
+        - Deep search: Entire computer
         - Shows all matches found
-        - Select the right file
         
-        **🔍 Search Locations:**
-        - Downloads folder
+        **Method 3: Extension Search**
+        - Search by file type (.pdf, .docx, etc.)
+        - Finds all files of that type
+        - System-wide search capability
+        
+        **🔍 Enhanced Search Locations:**
+        - User Downloads folder
         - Telegram Desktop folder
-        - Documents folder
-        - Desktop
-        - Subfolders (up to 2 levels)
+        - Documents & Desktop
+        - All system drives (Windows)
+        - Root directory (Linux/Mac)
+        - Program Files & System folders
+        - Recursive subdirectory search
         
         **🤖 RoboTask Compatible:**
         - Clear input fields
-        - Large buttons for clicking
+        - Large buttons for automation
         - Predictable UI layout
         - Progress indicators
+        - Multiple search options
         """)
         
         st.subheader("⚡ Analysis Types")
@@ -728,14 +936,38 @@ Generated by Auto File Analyzer with Gemini AI
         - **Automation Opportunities**: Process improvements
         - **Content Analysis**: Quality and structure review
         """)
+        
+        st.subheader("🔧 Technical Features")
+        st.markdown("""
+        **File Support:**
+        - PDF documents (with text extraction)
+        - Images (JPG, PNG)
+        - Text files
+        - Word documents (DOCX)
+        
+        **Search Capabilities:**
+        - Full computer search
+        - Multiple drive support
+        - Permission handling
+        - Duplicate removal
+        - Result sorting by date
+        
+        **AI Analysis:**
+        - Gemini 2.0 Flash model
+        - Multiple analysis types
+        - Progress tracking
+        - Error handling
+        - Download reports
+        """)
     
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666; padding: 20px;'>
-        <h4>🤖 Auto File Analyzer</h4>
-        <p>Smart file processing + Gemini AI analysis + RoboTask automation ready</p>
-        <p><strong>Perfect for automated document processing workflows!</strong></p>
+        <h4>🤖 Auto File Analyzer Pro</h4>
+        <p>Enhanced file processing + Full computer search + Gemini AI analysis + RoboTask automation ready</p>
+        <p><strong>Perfect for automated document processing workflows across your entire system!</strong></p>
+        <p><em>Search any file, anywhere on your computer, and get instant AI-powered analysis.</em></p>
     </div>
     """, unsafe_allow_html=True)
 
