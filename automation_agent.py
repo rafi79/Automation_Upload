@@ -1,12 +1,9 @@
 import streamlit as st
-import base64
 import os
 import json
 import tempfile
 import time
 from pathlib import Path
-from PIL import Image
-import requests
 import uuid
 import shutil
 import platform
@@ -66,28 +63,7 @@ class AutoFileAnalyzer:
         search_locations = []
         found_files = []
         
-        # For cloud/server environment, create dummy search locations
-        if platform.system() == "Linux":
-            # Check if we're in a cloud environment
-            if os.path.exists("/tmp/mock_downloads"):
-                # This is likely Streamlit Cloud - create safe mock locations
-                search_locations = [
-                    Path("/tmp/mock_downloads"),
-                    Path("/tmp/mock_documents"),
-                ]
-            else:
-                # Full Linux system search
-                search_locations = [
-                    Path("/home"),
-                    Path("/usr"),
-                    Path("/opt"),
-                    Path("/var"),
-                    Path("/tmp"),
-                ]
-                if deep_search:
-                    search_locations.insert(0, Path("/"))  # Root directory for deep search
-        
-        elif platform.system() == "Windows":
+        if platform.system() == "Windows":
             # Windows - search all drives and common locations
             available_drives = []
             for letter in string.ascii_uppercase:
@@ -139,11 +115,17 @@ class AutoFileAnalyzer:
                     Path("/usr"),
                 ])
         
-        else:
-            # Fallback for other systems
+        else:  # Linux and others
             search_locations = [
+                Path.home() / "Downloads",
+                Path.home() / "Documents",
+                Path.home() / "Desktop",
                 Path.home(),
-                Path("/tmp") if Path("/tmp").exists() else Path(tempfile.gettempdir()),
+                Path("/home"),
+                Path("/usr"),
+                Path("/opt"),
+                Path("/var"),
+                Path("/tmp"),
             ]
             if deep_search:
                 search_locations.insert(0, Path("/"))
@@ -191,16 +173,14 @@ class AutoFileAnalyzer:
                             except (PermissionError, OSError):
                                 continue
                                 
-                    except (PermissionError, OSError) as e:
-                        st.warning(f"⚠️ Permission denied: {location}")
+                    except (PermissionError, OSError):
                         continue
                         
                 # Break if we have enough results and not doing deep search
                 if not deep_search and len(found_files) >= 20:
                     break
                     
-            except (PermissionError, OSError) as e:
-                st.warning(f"⚠️ Cannot access: {location}")
+            except (PermissionError, OSError):
                 continue
         
         # Clear progress indicator
@@ -292,18 +272,6 @@ class AutoFileAnalyzer:
         except Exception as e:
             return False, f"Error validating file: {str(e)}", None
     
-    def copy_file_to_temp(self, source_path):
-        """Copy file to temporary directory for processing"""
-        try:
-            source = Path(source_path)
-            temp_filename = f"uploaded_{uuid.uuid4().hex[:8]}_{source.name}"
-            temp_path = self.temp_dir / temp_filename
-            
-            shutil.copy2(source, temp_path)
-            return temp_path, None
-        except Exception as e:
-            return None, f"Error copying file: {str(e)}"
-    
     def get_file_info(self, file_path):
         """Get file information"""
         try:
@@ -315,10 +283,10 @@ class AutoFileAnalyzer:
                 "size_mb": stat.st_size / 1024 / 1024,
                 "modified": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime)),
                 "extension": path.suffix.lower(),
-                "type": "PDF" if path.suffix.lower() == ".pdf" else "Image"
+                "type": "PDF" if path.suffix.lower() == ".pdf" else "Document"
             }
         except Exception as e:
-            return {"error": str(e)}
+            return {"name": str(file_path), "size_mb": 0, "modified": "Unknown", "extension": "", "type": "Unknown", "error": str(e)}
     
     def extract_text_from_pdf(self, pdf_path):
         """Extract text from PDF file"""
@@ -357,15 +325,15 @@ class AutoFileAnalyzer:
                 Analyze this PDF document: {file_info['name']}
                 
                 Document Content:
-                {content[:8000]}
+                {content[:8000] if content else 'No content extracted'}
                 
                 Analysis Type: {analysis_type}
                 """
             else:
                 base_prompt = f"""
                 Analyze this file: {file_info['name']}
+                File Type: {file_info.get('type', 'Unknown')}
                 Analysis Type: {analysis_type}
-                Please provide insights based on the filename and type.
                 """
             
             analysis_prompts = {
@@ -447,8 +415,8 @@ def get_analyzer():
     return AutoFileAnalyzer()
 
 def main():
-    st.title("🤖 Auto File Analyzer with Gemini AI")
-    st.markdown("**Smart File Processing** - Enhanced with Full Computer Search")
+    st.title("🤖 Auto File Analyzer with Full Computer Search")
+    st.markdown("**Smart File Processing** - Find any file on your computer and analyze with Gemini AI")
     
     if not GEMINI_AVAILABLE:
         st.error("⚠️ Google Gemini AI not available. Please install: pip install google-genai")
@@ -481,257 +449,258 @@ def main():
         else:
             st.info("No analyses completed yet")
         
-        st.header("🔍 Search Options")
+        st.header("🔍 Search Features")
         st.markdown("""
-        **🎯 Search Modes:**
         - **Quick Search**: Common locations
         - **Deep Search**: Entire computer
         - **Extension Search**: Find by file type
-        """)
-        
-        st.header("🤖 RoboTask Ready")
-        st.markdown("""
-        **Automation Steps:**
-        1. Enter filename below
-        2. System finds file automatically
-        3. Click "Use This" on found file
-        4. Select analysis type
-        5. Click "AUTO ANALYZE"
-        6. Download results
+        - **Direct Path**: Enter full file path
+        - **File Upload**: Manual upload option
         """)
     
-    # Main content
-    st.header("📁 Enhanced File Processing")
-    
-    col1, col2 = st.columns([2, 1])
+    # Main content - Two columns
+    col1, col2 = st.columns([3, 1])
     
     with col1:
-        st.subheader("🔍 Find Your File")
+        st.header("🔍 Find Your File")
         
-        # Method 1: Full path input
-        st.markdown("**Method 1: Enter Full File Path**")
-        file_path_input = st.text_input(
-            "Full file path:",
-            placeholder="C:\\Users\\Rafi7\\Downloads\\Telegram Desktop\\IQAC.pdf",
-            help="Enter the complete path to your file"
-        )
+        # Tab-based interface for different search methods
+        tab1, tab2, tab3, tab4 = st.tabs(["📝 File Path", "🔍 Search by Name", "📁 Search by Type", "📤 Upload File"])
         
-        # Method 2: Enhanced filename search
-        st.markdown("**Method 2: Enhanced Filename Search**")
-        
-        search_col1, search_col2 = st.columns([3, 1])
-        
-        with search_col1:
-            filename_only = st.text_input(
-                "Just the filename:",
-                placeholder="IQAC.pdf",
-                help="Enter just the filename - we'll search for it automatically"
+        with tab1:
+            st.markdown("**Enter Full File Path**")
+            file_path_input = st.text_input(
+                "Complete file path:",
+                placeholder="C:\\Users\\YourName\\Downloads\\document.pdf",
+                help="Enter the complete path to your file"
             )
-        
-        with search_col2:
-            deep_search = st.checkbox("🔍 Deep Search", help="Search entire computer (slower)")
-        
-        # Search options
-        search_options_col1, search_options_col2 = st.columns(2)
-        
-        with search_options_col1:
-            max_results = st.selectbox("Max Results:", [10, 25, 50, 100], index=1)
-        
-        with search_options_col2:
-            search_extension = st.text_input("Search by extension:", placeholder="pdf", help="Leave empty to search by filename")
-        
-        # Analysis type selection
-        analysis_type = st.selectbox(
-            "Select Analysis Type:",
-            [
-                "Document Summary",
-                "Key Information Extraction",
-                "Automation Opportunities", 
-                "Content Analysis"
-            ]
-        )
-        
-        # File processing logic
-        selected_file_path = None
-        
-        # Process extension search
-        if search_extension and st.button("🔍 Search by Extension", type="secondary"):
-            with st.spinner(f"Searching for .{search_extension} files..."):
-                found_files = analyzer.search_by_extension(search_extension, max_results)
-                
-                if found_files:
-                    st.success(f"✅ Found {len(found_files)} .{search_extension} files!")
+            
+            if st.button("✅ Validate & Use File", type="primary", key="validate_path"):
+                if file_path_input:
+                    is_valid, message, validated_path = analyzer.validate_file_path(file_path_input)
                     
-                    # Display found files
-                    st.subheader("📁 Found Files")
-                    for i, file_path in enumerate(found_files):
-                        file_info = analyzer.get_file_info(file_path)
-                        
-                        with st.expander(f"📄 {file_info['name']} ({file_info['size_mb']:.2f} MB)"):
-                            st.write(f"**📁 Path:** {file_path}")
-                            st.write(f"**📅 Modified:** {file_info['modified']}")
-                            
-                            if st.button(f"✅ Use This File", key=f"use_ext_file_{i}"):
-                                st.session_state.selected_file = str(file_path)
-                                st.session_state.selected_file_info = file_info
-                                st.rerun()
+                    if is_valid:
+                        st.success(f"✅ {message}")
+                        file_info = analyzer.get_file_info(validated_path)
+                        st.session_state.selected_file = validated_path
+                        st.session_state.selected_file_info = file_info
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {message}")
                 else:
-                    st.error(f"❌ No .{search_extension} files found")
+                    st.warning("Please enter a file path")
         
-        # Process filename search
-        elif filename_only and not file_path_input:
-            search_button_col1, search_button_col2 = st.columns(2)
+        with tab2:
+            st.markdown("**Search by Filename**")
             
-            with search_button_col1:
-                if st.button("🔍 Quick Search", type="primary"):
-                    with st.spinner(f"Searching for {filename_only}..."):
-                        found_files = analyzer.search_for_file(filename_only, max_results, deep_search=False)
+            col_search1, col_search2 = st.columns([3, 1])
+            with col_search1:
+                filename_input = st.text_input(
+                    "Filename to search:",
+                    placeholder="document.pdf",
+                    help="Enter just the filename"
+                )
+            with col_search2:
+                max_results = st.selectbox("Max Results", [10, 25, 50, 100], index=1)
+            
+            search_col1, search_col2 = st.columns(2)
+            
+            with search_col1:
+                if st.button("🔍 Quick Search", type="primary", key="quick_search"):
+                    if filename_input:
+                        with st.spinner(f"Searching for {filename_input}..."):
+                            found_files = analyzer.search_for_file(filename_input, max_results, deep_search=False)
+                            
+                            if found_files:
+                                st.success(f"✅ Found {len(found_files)} files!")
+                                
+                                for i, file_path in enumerate(found_files):
+                                    file_info = analyzer.get_file_info(file_path)
+                                    
+                                    with st.expander(f"📄 {file_info['name']} ({file_info['size_mb']:.2f} MB)"):
+                                        st.write(f"**Path:** {file_path}")
+                                        st.write(f"**Modified:** {file_info['modified']}")
+                                        
+                                        if st.button(f"✅ Use This File", key=f"use_quick_{i}"):
+                                            st.session_state.selected_file = str(file_path)
+                                            st.session_state.selected_file_info = file_info
+                                            st.rerun()
+                            else:
+                                st.warning("No files found. Try Deep Search.")
+                    else:
+                        st.warning("Please enter a filename")
+            
+            with search_col2:
+                if st.button("🔍 Deep Search", type="secondary", key="deep_search"):
+                    if filename_input:
+                        with st.spinner(f"Deep searching for {filename_input}... This may take time..."):
+                            found_files = analyzer.search_for_file(filename_input, max_results, deep_search=True)
+                            
+                            if found_files:
+                                st.success(f"✅ Deep search found {len(found_files)} files!")
+                                
+                                for i, file_path in enumerate(found_files):
+                                    file_info = analyzer.get_file_info(file_path)
+                                    
+                                    with st.expander(f"📄 {file_info['name']} ({file_info['size_mb']:.2f} MB)"):
+                                        st.write(f"**Path:** {file_path}")
+                                        st.write(f"**Modified:** {file_info['modified']}")
+                                        
+                                        if st.button(f"✅ Use This File", key=f"use_deep_{i}"):
+                                            st.session_state.selected_file = str(file_path)
+                                            st.session_state.selected_file_info = file_info
+                                            st.rerun()
+                            else:
+                                st.error("No files found even with deep search")
+                    else:
+                        st.warning("Please enter a filename")
+        
+        with tab3:
+            st.markdown("**Search by File Extension**")
+            
+            col_ext1, col_ext2 = st.columns([2, 1])
+            with col_ext1:
+                extension_input = st.text_input(
+                    "File extension:",
+                    placeholder="pdf",
+                    help="Enter file extension without the dot"
+                )
+            with col_ext2:
+                ext_max_results = st.selectbox("Max Results", [10, 25, 50, 100], index=1, key="ext_max")
+            
+            if st.button("🔍 Search by Extension", type="primary", key="search_extension"):
+                if extension_input:
+                    with st.spinner(f"Searching for .{extension_input} files..."):
+                        found_files = analyzer.search_by_extension(extension_input, ext_max_results)
                         
                         if found_files:
-                            st.success(f"✅ Found {len(found_files)} matching files!")
+                            st.success(f"✅ Found {len(found_files)} .{extension_input} files!")
                             
-                            # Display found files
-                            st.subheader("📁 Found Files")
                             for i, file_path in enumerate(found_files):
                                 file_info = analyzer.get_file_info(file_path)
                                 
                                 with st.expander(f"📄 {file_info['name']} ({file_info['size_mb']:.2f} MB)"):
-                                    st.write(f"**📁 Path:** {file_path}")
-                                    st.write(f"**📅 Modified:** {file_info['modified']}")
+                                    st.write(f"**Path:** {file_path}")
+                                    st.write(f"**Modified:** {file_info['modified']}")
                                     
-                                    if st.button(f"✅ Use This File", key=f"use_file_{i}"):
+                                    if st.button(f"✅ Use This File", key=f"use_ext_{i}"):
                                         st.session_state.selected_file = str(file_path)
                                         st.session_state.selected_file_info = file_info
                                         st.rerun()
                         else:
-                            st.warning("❌ No files found in quick search. Try Deep Search for comprehensive results.")
-            
-            with search_button_col2:
-                if st.button("🔍 Deep Search", type="secondary"):
-                    with st.spinner(f"Deep searching for {filename_only}... This may take a while..."):
-                        found_files = analyzer.search_for_file(filename_only, max_results, deep_search=True)
-                        
-                        if found_files:
-                            st.success(f"✅ Deep search found {len(found_files)} matching files!")
-                            
-                            # Display found files
-                            st.subheader("📁 Found Files")
-                            for i, file_path in enumerate(found_files):
-                                file_info = analyzer.get_file_info(file_path)
-                                
-                                with st.expander(f"📄 {file_info['name']} ({file_info['size_mb']:.2f} MB)"):
-                                    st.write(f"**📁 Path:** {file_path}")
-                                    st.write(f"**📅 Modified:** {file_info['modified']}")
-                                    
-                                    if st.button(f"✅ Use This File", key=f"use_deep_file_{i}"):
-                                        st.session_state.selected_file = str(file_path)
-                                        st.session_state.selected_file_info = file_info
-                                        st.rerun()
-                        else:
-                            st.error(f"❌ No files found even with deep search")
+                            st.error(f"No .{extension_input} files found")
+                else:
+                    st.warning("Please enter a file extension")
         
-        # Process full path
-        elif file_path_input:
-            if st.button("✅ Validate File Path", type="primary"):
-                is_valid, message, validated_path = analyzer.validate_file_path(file_path_input)
+        with tab4:
+            st.markdown("**Upload File Directly**")
+            uploaded_file = st.file_uploader(
+                "Choose a file",
+                type=['pdf', 'txt', 'docx', 'png', 'jpg', 'jpeg'],
+                help="Upload a file directly for analysis"
+            )
+            
+            if uploaded_file:
+                st.success(f"📁 File uploaded: {uploaded_file.name}")
                 
-                if is_valid:
-                    st.success(f"✅ {message}")
+                # Create file info for uploaded file
+                file_info = {
+                    "name": uploaded_file.name,
+                    "size_mb": len(uploaded_file.getvalue()) / 1024 / 1024,
+                    "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "extension": Path(uploaded_file.name).suffix.lower(),
+                    "type": "PDF" if uploaded_file.type == "application/pdf" else "Document"
+                }
+                
+                if st.button("✅ Use Uploaded File", type="primary", key="use_upload"):
+                    # Save uploaded file to temp directory
+                    temp_path = analyzer.temp_dir / f"uploaded_{uuid.uuid4().hex[:8]}_{uploaded_file.name}"
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded_file.getvalue())
                     
-                    file_info = analyzer.get_file_info(validated_path)
-                    st.session_state.selected_file = validated_path
+                    st.session_state.selected_file = str(temp_path)
                     st.session_state.selected_file_info = file_info
+                    st.session_state.is_uploaded = True
                     st.rerun()
-                else:
-                    st.error(f"❌ {message}")
         
         # Show selected file and analysis section
         if hasattr(st.session_state, 'selected_file') and hasattr(st.session_state, 'selected_file_info'):
             st.markdown("---")
-            st.subheader("📁 Selected File")
+            st.header("📁 Selected File Ready for Analysis")
             
             selected_file_path = st.session_state.selected_file
             file_info = st.session_state.selected_file_info
             
-            st.success(f"✅ File ready for analysis: **{file_info['name']}**")
-            
-            # Show file info in a nice layout
+            # File info display
             info_col1, info_col2, info_col3 = st.columns(3)
             with info_col1:
-                st.metric("📄 File Name", file_info['name'])
+                st.metric("📄 Filename", file_info['name'])
             with info_col2:
                 st.metric("📊 Size", f"{file_info['size_mb']:.2f} MB")
             with info_col3:
                 st.metric("📋 Type", file_info['type'])
             
-            st.write(f"**📅 Last Modified:** {file_info['modified']}")
-            st.write(f"**📁 Path:** {selected_file_path}")
+            st.info(f"**📁 Path:** {selected_file_path}")
+            st.info(f"**📅 Modified:** {file_info['modified']}")
             
             # Analysis section
-            st.subheader("🤖 AI Analysis")
+            st.subheader("🤖 AI Analysis Configuration")
             
-            # Analysis type selector (make it more prominent)
-            analysis_type_selected = st.selectbox(
-                "🎯 Choose Analysis Type:",
+            analysis_type = st.selectbox(
+                "Choose Analysis Type:",
                 [
                     "Document Summary",
                     "Key Information Extraction",
-                    "Automation Opportunities", 
+                    "Automation Opportunities",
                     "Content Analysis"
                 ],
-                key="analysis_type_selector",
-                help="Select what type of analysis you want Gemini AI to perform"
+                help="Select the type of analysis you want Gemini AI to perform"
             )
             
-            # Big prominent analysis button
-            if st.button("🚀 **START GEMINI AI ANALYSIS**", type="primary", use_container_width=True, key="main_analysis_button"):
-                with st.spinner("🤖 Analyzing with Gemini AI... Please wait..."):
+            # Analysis button
+            if st.button("🚀 START GEMINI AI ANALYSIS", type="primary", use_container_width=True):
+                with st.spinner("🤖 Analyzing with Gemini AI..."):
                     
-                    # Progress bar for better UX
+                    # Progress tracking
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
                     # Step 1: File preparation
-                    status_text.text("📄 Preparing file for analysis...")
+                    status_text.text("📄 Preparing file...")
                     progress_bar.progress(20)
-                    time.sleep(1)
+                    time.sleep(0.5)
                     
                     # Step 2: Content extraction
                     status_text.text("📖 Extracting content...")
                     progress_bar.progress(40)
                     
-                    # Extract content from the actual file
                     try:
                         if file_info['type'] == "PDF":
                             content = analyzer.extract_text_from_pdf(selected_file_path)
                             if not content or len(content.strip()) == 0:
-                                content = f"PDF file: {file_info['name']} - Content extraction may require different PDF processing method."
+                                content = f"PDF file: {file_info['name']} - Content extraction completed but no text found."
                         else:
-                            # For image files or other types
-                            content = f"File: {file_info['name']} - Image/document analysis based on filename and properties."
+                            content = f"File: {file_info['name']} - Non-PDF document ready for analysis."
                     except Exception as e:
                         content = f"Error extracting content from {file_info['name']}: {str(e)}"
                         st.warning(f"⚠️ Content extraction issue: {str(e)}")
                     
-                    if len(content.strip()) == 0:
-                        content = f"File: {file_info['name']} - Ready for analysis based on file properties and metadata."
-                    
                     progress_bar.progress(60)
                     status_text.text("🤖 Sending to Gemini AI...")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     
                     # Step 3: AI Analysis
-                    analysis_result = analyzer.analyze_with_gemini(content, file_info, analysis_type_selected)
+                    analysis_result = analyzer.analyze_with_gemini(content, file_info, analysis_type)
                     
                     progress_bar.progress(80)
                     status_text.text("📝 Processing results...")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     
                     progress_bar.progress(100)
                     status_text.text("✅ Analysis complete!")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     
-                    # Clear progress indicators
+                    # Clear progress
                     progress_bar.empty()
                     status_text.empty()
                     
@@ -739,235 +708,138 @@ def main():
                     if analysis_result and not analysis_result.startswith("Error"):
                         st.success("🎉 **Analysis Completed Successfully!**")
                         
-                        # Results section
                         st.markdown("### 📊 Gemini AI Analysis Results")
                         st.markdown("---")
-                        
-                        # Display results in a nice format
                         st.markdown(analysis_result)
-                        
                         st.markdown("---")
                         
                         # Download section
-                        st.subheader("💾 Download Results")
+                        st.subheader("💾 Download Analysis Report")
                         
-                        # Create download data
                         timestamp = int(time.time())
                         safe_filename = "".join(c for c in file_info['name'] if c.isalnum() or c in (' ', '-', '_')).rstrip()
                         download_filename = f"analysis_{safe_filename}_{timestamp}.txt"
                         
-                        # Create formatted download content
-                        download_content = f"""
-GEMINI AI ANALYSIS REPORT
+                        download_content = f"""GEMINI AI ANALYSIS REPORT
 ========================
 
 File: {file_info['name']}
-Analysis Type: {analysis_type_selected}
+Analysis Type: {analysis_type}
 Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}
 File Size: {file_info['size_mb']:.2f} MB
+File Path: {selected_file_path}
 
 ANALYSIS RESULTS:
 {analysis_result}
 
 ---
 Generated by Auto File Analyzer with Gemini AI
-                        """
+"""
                         
-                        # Download button
                         st.download_button(
-                            label="💾 **Download Complete Analysis Report**",
+                            label="💾 Download Complete Report",
                             data=download_content,
                             file_name=download_filename,
                             mime="text/plain",
-                            use_container_width=True,
-                            key="download_results_button"
+                            use_container_width=True
                         )
                         
-                        # Additional options
-                        col_a, col_b = st.columns(2)
-                        with col_a:
+                        # Action buttons
+                        action_col1, action_col2 = st.columns(2)
+                        with action_col1:
                             if st.button("🔄 Analyze Again", key="analyze_again"):
                                 st.rerun()
-                        with col_b:
-                            if st.button("📄 Select New File", key="select_new_file"):
+                        with action_col2:
+                            if st.button("📄 Select New File", key="new_file"):
                                 # Clear session state
-                                if hasattr(st.session_state, 'selected_file'):
-                                    del st.session_state.selected_file
-                                    del st.session_state.selected_file_info
+                                for key in ['selected_file', 'selected_file_info', 'is_uploaded']:
+                                    if hasattr(st.session_state, key):
+                                        delattr(st.session_state, key)
                                 st.rerun()
                         
                         # Log success
-                        analyzer.log_analysis(selected_file_path, analysis_type_selected, True, len(analysis_result))
-                        
-                        # Celebration
+                        analyzer.log_analysis(selected_file_path, analysis_type, True, len(analysis_result))
                         st.balloons()
                         
                     else:
                         st.error(f"❌ Analysis failed: {analysis_result}")
-                        analyzer.log_analysis(selected_file_path, analysis_type_selected, False)
+                        analyzer.log_analysis(selected_file_path, analysis_type, False)
                         
-                        # Retry option
-                        if st.button("🔄 Try Again", key="retry_analysis"):
+                        if st.button("🔄 Retry Analysis", key="retry"):
                             st.rerun()
-        
-        # Manual file upload fallback
-        st.markdown("---")
-        st.subheader("📤 Manual Upload (Alternative)")
-        uploaded_file = st.file_uploader("Upload file directly", type=['pdf', 'png', 'jpg', 'jpeg', 'txt', 'docx'])
-        
-        if uploaded_file:
-            st.success(f"📁 Uploaded: {uploaded_file.name}")
-            
-            if st.button("🔍 Analyze Uploaded File"):
-                with st.spinner("🤖 Analyzing uploaded file..."):
-                    # Create file info
-                    file_info = {
-                        "name": uploaded_file.name,
-                        "size_mb": len(uploaded_file.getvalue()) / 1024 / 1024,
-                        "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
-                        "extension": Path(uploaded_file.name).suffix.lower(),
-                        "type": "PDF" if uploaded_file.type == "application/pdf" else "Document"
-                    }
-                    
-                    # Save and process file
-                    temp_path = analyzer.temp_dir / f"uploaded_{uuid.uuid4().hex[:8]}_{uploaded_file.name}"
-                    with open(temp_path, "wb") as f:
-                        f.write(uploaded_file.getvalue())
-                    
-                    # Extract content
-                    try:
-                        if file_info['type'] == "PDF":
-                            content = analyzer.extract_text_from_pdf(temp_path)
-                        else:
-                            content = f"Uploaded file: {uploaded_file.name} - Document analysis based on filename and properties."
-                    except Exception as e:
-                        content = f"Error processing uploaded file: {str(e)}"
-                    
-                    # Analyze
-                    analysis_result = analyzer.analyze_with_gemini(content, file_info, analysis_type)
-                    
-                    # Show results
-                    if analysis_result and not analysis_result.startswith("Error"):
-                        st.success("🎉 **Upload Analysis Completed!**")
-                        st.markdown("### 📊 Analysis Results")
-                        st.markdown("---")
-                        st.markdown(analysis_result)
-                        
-                        # Download option
-                        timestamp = int(time.time())
-                        safe_filename = "".join(c for c in uploaded_file.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-                        download_filename = f"analysis_{safe_filename}_{timestamp}.txt"
-                        
-                        download_content = f"""
-GEMINI AI ANALYSIS REPORT
-========================
-
-File: {uploaded_file.name}
-Analysis Type: {analysis_type}
-Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}
-File Size: {file_info['size_mb']:.2f} MB
-
-ANALYSIS RESULTS:
-{analysis_result}
-
----
-Generated by Auto File Analyzer with Gemini AI
-                        """
-                        
-                        st.download_button(
-                            label="💾 Download Analysis Report",
-                            data=download_content,
-                            file_name=download_filename,
-                            mime="text/plain",
-                            key="download_upload_results"
-                        )
-                        
-                        # Log success
-                        analyzer.log_analysis(str(temp_path), analysis_type, True, len(analysis_result))
-                    else:
-                        st.error(f"❌ Upload analysis failed: {analysis_result}")
-                        analyzer.log_analysis(str(temp_path), analysis_type, False)
-                    
-                    # Cleanup
-                    temp_path.unlink(missing_ok=True)
     
     with col2:
-        st.subheader("ℹ️ How It Works")
+        st.header("ℹ️ Features")
         st.markdown("""
-        **🎯 Three Methods:**
+        **🔍 Search Methods:**
+        - Direct file path entry
+        - Filename search (quick/deep)
+        - Extension-based search
+        - Manual file upload
         
-        **Method 1: Full Path**
-        - Enter complete file path
-        - System validates file exists
-        - Processes immediately
-        
-        **Method 2: Filename Search**
-        - Enter just the filename
-        - Quick search: Common folders
-        - Deep search: Entire computer
-        - Shows all matches found
-        
-        **Method 3: Extension Search**
-        - Search by file type (.pdf, .docx, etc.)
-        - Finds all files of that type
-        - System-wide search capability
-        
-        **🔍 Enhanced Search Locations:**
-        - User Downloads folder
-        - Telegram Desktop folder
-        - Documents & Desktop
-        - All system drives (Windows)
-        - Root directory (Linux/Mac)
-        - Program Files & System folders
-        - Recursive subdirectory search
-        
-        **🤖 RoboTask Compatible:**
-        - Clear input fields
-        - Large buttons for automation
-        - Predictable UI layout
-        - Progress indicators
-        - Multiple search options
-        """)
-        
-        st.subheader("⚡ Analysis Types")
-        st.markdown("""
-        - **Document Summary**: Overview and key points
-        - **Key Information**: Extract names, dates, numbers
-        - **Automation Opportunities**: Process improvements
-        - **Content Analysis**: Quality and structure review
-        """)
-        
-        st.subheader("🔧 Technical Features")
-        st.markdown("""
-        **File Support:**
-        - PDF documents (with text extraction)
-        - Images (JPG, PNG)
-        - Text files
-        - Word documents (DOCX)
-        
-        **Search Capabilities:**
-        - Full computer search
-        - Multiple drive support
+        **🔧 Search Capabilities:**
+        - Full computer scan
+        - All drives (Windows)
+        - System directories
+        - User folders priority
         - Permission handling
         - Duplicate removal
-        - Result sorting by date
         
-        **AI Analysis:**
-        - Gemini 2.0 Flash model
-        - Multiple analysis types
+        **📊 Analysis Types:**
+        - Document Summary
+        - Key Information Extraction
+        - Automation Opportunities
+        - Content Analysis
+        
+        **🤖 AI Features:**
+        - Gemini 2.0 Flash
+        - PDF text extraction
+        - Multiple file types
         - Progress tracking
         - Error handling
         - Download reports
+        
+        **💡 Tips:**
+        - Use Quick Search first
+        - Try Deep Search if needed
+        - Extension search for file types
+        - Upload for cloud files
+        """)
+        
+        st.header("🎯 How to Use")
+        st.markdown("""
+        1. **Choose a search method** from the tabs above
+        2. **Find your file** using one of the search options
+        3. **Select the file** you want to analyze
+        4. **Choose analysis type** based on your needs
+        5. **Click analyze** and wait for results
+        6. **Download the report** when complete
+        """)
+        
+        st.header("⚡ Performance")
+        if analyzer.analysis_history:
+            avg_length = sum(a.get('result_length', 0) for a in analyzer.analysis_history if a['success']) / max(1, len([a for a in analyzer.analysis_history if a['success']]))
+            st.metric("Avg Report Length", f"{avg_length:.0f} chars")
+        
+        st.markdown("""
+        **Search Speed:**
+        - Quick: 2-10 seconds
+        - Deep: 30+ seconds
+        - Extension: Variable
+        
+        **Analysis Time:**
+        - Small files: 5-15 seconds
+        - Large files: 15-30 seconds
         """)
     
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666; padding: 20px;'>
-        <h4>🤖 Auto File Analyzer Pro</h4>
-        <p>Enhanced file processing + Full computer search + Gemini AI analysis + RoboTask automation ready</p>
-        <p><strong>Perfect for automated document processing workflows across your entire system!</strong></p>
-        <p><em>Search any file, anywhere on your computer, and get instant AI-powered analysis.</em></p>
+        <h3>🤖 Auto File Analyzer Pro</h3>
+        <p><strong>Enhanced File Search + Gemini AI Analysis + Full Computer Access</strong></p>
+        <p>Find any file anywhere on your computer and get instant AI-powered insights</p>
+        <p><em>Perfect for automation, document processing, and intelligent file management</em></p>
     </div>
     """, unsafe_allow_html=True)
 
