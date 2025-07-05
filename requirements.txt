@@ -1,18 +1,42 @@
-# Minimal Requirements for Voice-Enabled Auto File Analyzer
-# ========================================================
+# Fixed Requirements for Voice-Enabled Auto File Analyzer
+# =====================================================
+
+# OPTION 1: Install system dependencies first (RECOMMENDED)
+# For Ubuntu/Debian: sudo apt-get install portaudio19-dev python3-pyaudio
+# For CentOS/RHEL: sudo yum install portaudio-devel
+# For macOS: brew install portaudio
 
 # Core Dependencies (Required)
 streamlit>=1.28.0
 google-genai>=0.7.0
-SpeechRecognition>=3.10.0
-pyaudio>=0.2.11
 PyPDF2>=3.0.1
 Pillow>=10.0.0
 requests>=2.31.0
 
-# Alternative PDF processor (choose one)
+# Voice Recognition (Multiple options - try in order)
+# Option 1: System PyAudio (after installing portaudio19-dev)
+# pyaudio>=0.2.11
+
+# Option 2: Alternative audio library (if PyAudio fails)
+sounddevice>=0.4.6
+soundfile>=0.12.1
+
+# Option 3: Web-based speech recognition (browser microphone)
+speech_recognition>=3.10.0
+
+# Alternative PDF processor
 PyMuPDF>=1.23.0
 
-# Optional but recommended
+# Optional enhanced features
 google-cloud-speech>=2.21.0
 pydub>=0.25.1
+numpy>=1.24.0
+
+# Fallback audio processing (if pyaudio fails)
+wave  # Built-in
+audioop-lts>=0.2.1  # Fallback for audioop
+
+# Alternative voice libraries (choose based on your system)
+# vosk>=0.3.45          # Offline speech recognition
+# whisper>=1.1.10       # OpenAI Whisper (local)
+# deepspeech>=0.9.3     # Mozilla DeepSpeech
