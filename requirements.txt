@@ -1,0 +1,16 @@
+streamlit==1.29.0
+google-genai==0.3.0
+speechrecognition==3.10.0
+pyautogui==0.9.54
+psutil==5.9.6
+selenium==4.15.2
+pillow==10.1.0
+opencv-python==4.8.1.78
+numpy==1.24.3
+sounddevice==0.4.6
+scipy==1.11.4
+requests==2.31.0
+pywin32==306
+webdriver-manager==4.0.1
+pathlib2==2.3.7
+uuid==1.30
