@@ -60,147 +60,191 @@ class AutoFileAnalyzer:
         
     def search_for_file(self, filename, max_results=50, deep_search=False):
         """Search for a file across the entire computer with enhanced options"""
-        search_locations = []
         found_files = []
+        searched_locations = []
         
-        if platform.system() == "Windows":
-            # Windows - search all drives and common locations
-            available_drives = []
-            for letter in string.ascii_uppercase:
-                drive_path = Path(f"{letter}:/")
-                if drive_path.exists():
-                    available_drives.append(drive_path)
-            
-            # Start with user-specific locations for faster results
-            username = os.getenv("USERNAME", "")
-            if username:
-                search_locations = [
-                    Path("C:/Users") / username / "Downloads",
-                    Path("C:/Users") / username / "Downloads" / "Telegram Desktop",
-                    Path("C:/Users") / username / "Documents",
-                    Path("C:/Users") / username / "Desktop",
-                    Path("C:/Users") / username,
-                ]
-            
-            # Add system-wide locations
-            search_locations.extend([
-                Path("C:/Users"),
-                Path("C:/Program Files"),
-                Path("C:/Program Files (x86)"),
-                Path("C:/ProgramData"),
-                Path("C:/Temp"),
-                Path("C:/Windows/Temp"),
-            ])
-            
-            # Add all drives for comprehensive search
-            if deep_search:
-                search_locations.extend(available_drives)
-        
-        elif platform.system() == "Darwin":  # macOS
-            search_locations = [
-                Path.home() / "Downloads",
-                Path.home() / "Documents",
-                Path.home() / "Desktop",
-                Path.home(),
-                Path("/Applications"),
-                Path("/Users"),
-                Path("/tmp"),
-            ]
-            if deep_search:
-                search_locations.extend([
-                    Path("/"),
-                    Path("/System"),
-                    Path("/Library"),
-                    Path("/var"),
-                    Path("/usr"),
-                ])
-        
-        else:  # Linux and others
-            search_locations = [
-                Path.home() / "Downloads",
-                Path.home() / "Documents",
-                Path.home() / "Desktop",
-                Path.home(),
-                Path("/home"),
-                Path("/usr"),
-                Path("/opt"),
-                Path("/var"),
-                Path("/tmp"),
-            ]
-            if deep_search:
-                search_locations.insert(0, Path("/"))
-        
-        # Progress tracking
+        # Create progress indicator
         progress_placeholder = st.empty()
-        total_locations = len(search_locations)
         
-        for idx, location in enumerate(search_locations):
-            try:
-                if location.exists():
-                    # Update progress
-                    progress_placeholder.text(f"🔍 Searching in: {location} ({idx+1}/{total_locations})")
-                    
-                    # Search for exact filename
-                    exact_match = location / filename
-                    if exact_match.exists() and exact_match.is_file():
-                        found_files.append(exact_match)
-                    
-                    # Search for files containing the filename (recursive)
-                    try:
-                        if deep_search:
-                            # Deep recursive search
-                            for file_path in location.rglob(f"*{filename}*"):
-                                if file_path.is_file():
-                                    found_files.append(file_path)
-                                    
-                                # Limit results to prevent overwhelming output
-                                if len(found_files) >= max_results:
-                                    break
-                        else:
-                            # Limited depth search (max 3 levels)
-                            for file_path in location.glob(f"*{filename}*"):
-                                if file_path.is_file():
-                                    found_files.append(file_path)
-                            
-                            # Search 2 levels deep
-                            try:
-                                for file_path in location.glob(f"*/*{filename}*"):
-                                    if file_path.is_file():
-                                        found_files.append(file_path)
-                                for file_path in location.glob(f"*/*/*{filename}*"):
-                                    if file_path.is_file():
-                                        found_files.append(file_path)
-                            except (PermissionError, OSError):
-                                continue
-                                
-                    except (PermissionError, OSError):
-                        continue
-                        
-                # Break if we have enough results and not doing deep search
-                if not deep_search and len(found_files) >= 20:
-                    break
-                    
-            except (PermissionError, OSError):
-                continue
-        
-        # Clear progress indicator
-        progress_placeholder.empty()
-        
-        # Remove duplicates
-        unique_files = []
-        seen_paths = set()
-        for file_path in found_files:
-            if str(file_path) not in seen_paths:
-                unique_files.append(file_path)
-                seen_paths.add(str(file_path))
-        
-        # Sort by newest first
         try:
-            unique_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-        except (PermissionError, OSError):
-            pass
-        
-        return unique_files[:max_results]
+            if platform.system() == "Windows":
+                # Get available drives
+                available_drives = []
+                for letter in string.ascii_uppercase:
+                    drive_path = Path(f"{letter}:/")
+                    if drive_path.exists():
+                        available_drives.append(drive_path)
+                
+                # Priority search locations (user folders first)
+                username = os.getenv("USERNAME", "")
+                priority_locations = []
+                
+                if username:
+                    user_locations = [
+                        Path(f"C:/Users/{username}/Downloads"),
+                        Path(f"C:/Users/{username}/Documents"),
+                        Path(f"C:/Users/{username}/Desktop"),
+                        Path(f"C:/Users/{username}/Pictures"),
+                        Path(f"C:/Users/{username}/Videos"),
+                        Path(f"C:/Users/{username}"),
+                    ]
+                    priority_locations.extend([loc for loc in user_locations if loc.exists()])
+                
+                # Add common system locations
+                system_locations = [
+                    Path("C:/Users"),
+                    Path("C:/Downloads"),
+                    Path("C:/Temp"),
+                    Path("C:/tmp"),
+                ]
+                priority_locations.extend([loc for loc in system_locations if loc.exists()])
+                
+                # For deep search, add all drives
+                if deep_search:
+                    priority_locations.extend(available_drives)
+                
+                search_locations = priority_locations
+                
+            elif platform.system() == "Darwin":  # macOS
+                search_locations = [
+                    Path.home() / "Downloads",
+                    Path.home() / "Documents", 
+                    Path.home() / "Desktop",
+                    Path.home() / "Pictures",
+                    Path.home(),
+                    Path("/Users"),
+                    Path("/tmp"),
+                ]
+                
+                if deep_search:
+                    search_locations.extend([
+                        Path("/"),
+                        Path("/Applications"),
+                        Path("/System"),
+                        Path("/Library"),
+                        Path("/usr"),
+                        Path("/var"),
+                    ])
+                    
+            else:  # Linux
+                search_locations = [
+                    Path.home() / "Downloads",
+                    Path.home() / "Documents",
+                    Path.home() / "Desktop", 
+                    Path.home(),
+                    Path("/home"),
+                    Path("/tmp"),
+                    Path("/var/tmp"),
+                ]
+                
+                if deep_search:
+                    search_locations.extend([
+                        Path("/"),
+                        Path("/usr"),
+                        Path("/opt"),
+                        Path("/var"),
+                    ])
+            
+            # Filter existing locations
+            search_locations = [loc for loc in search_locations if loc.exists()]
+            total_locations = len(search_locations)
+            
+            # Search each location
+            for idx, location in enumerate(search_locations):
+                try:
+                    progress_placeholder.text(f"🔍 Searching: {location} ({idx+1}/{total_locations})")
+                    searched_locations.append(str(location))
+                    
+                    # Exact filename match
+                    exact_file = location / filename
+                    if exact_file.exists() and exact_file.is_file():
+                        found_files.append(exact_file)
+                        st.write(f"✅ Found exact match: {exact_file}")
+                    
+                    # Pattern matching - try different approaches
+                    search_patterns = [
+                        f"*{filename}*",  # Contains filename
+                        f"{filename}*",   # Starts with filename
+                        f"*{filename}",   # Ends with filename
+                    ]
+                    
+                    for pattern in search_patterns:
+                        try:
+                            if deep_search:
+                                # Recursive search
+                                for file_path in location.rglob(pattern):
+                                    if file_path.is_file() and str(file_path) not in [str(f) for f in found_files]:
+                                        found_files.append(file_path)
+                                        st.write(f"📄 Found: {file_path}")
+                                        
+                                        if len(found_files) >= max_results:
+                                            break
+                            else:
+                                # Non-recursive search (current directory only)
+                                for file_path in location.glob(pattern):
+                                    if file_path.is_file() and str(file_path) not in [str(f) for f in found_files]:
+                                        found_files.append(file_path)
+                                        st.write(f"📄 Found: {file_path}")
+                                        
+                                        if len(found_files) >= max_results:
+                                            break
+                                            
+                                # Search one level deep
+                                try:
+                                    for file_path in location.glob(f"*/{pattern}"):
+                                        if file_path.is_file() and str(file_path) not in [str(f) for f in found_files]:
+                                            found_files.append(file_path)
+                                            st.write(f"📄 Found: {file_path}")
+                                            
+                                            if len(found_files) >= max_results:
+                                                break
+                                except (PermissionError, OSError):
+                                    pass
+                                    
+                        except (PermissionError, OSError) as e:
+                            st.write(f"⚠️ Permission denied: {location}")
+                            continue
+                            
+                        if len(found_files) >= max_results:
+                            break
+                    
+                    # Early exit if we have enough results and not deep searching
+                    if not deep_search and len(found_files) >= 10:
+                        break
+                        
+                except (PermissionError, OSError) as e:
+                    st.write(f"❌ Cannot access: {location} - {e}")
+                    continue
+            
+            # Clear progress
+            progress_placeholder.empty()
+            
+            # Show search summary
+            st.write(f"🔍 Searched {len(searched_locations)} locations")
+            st.write(f"📁 Found {len(found_files)} files")
+            
+            # Remove duplicates and sort
+            unique_files = []
+            seen_paths = set()
+            
+            for file_path in found_files:
+                path_str = str(file_path.resolve())
+                if path_str not in seen_paths:
+                    unique_files.append(file_path)
+                    seen_paths.add(path_str)
+            
+            # Sort by modification time (newest first)
+            try:
+                unique_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            except (PermissionError, OSError):
+                pass
+            
+            return unique_files[:max_results]
+            
+        except Exception as e:
+            progress_placeholder.empty()
+            st.error(f"Search error: {e}")
+            return []
     
     def search_by_extension(self, extension, max_results=50):
         """Search for files by extension across the entire system"""
