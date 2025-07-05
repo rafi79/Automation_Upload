@@ -7,11 +7,16 @@ import time
 from pathlib import Path
 from PIL import Image
 import requests
-import io
-import numpy as np
 import uuid
-from google import genai
-from google.genai import types
+
+# Try to import optional dependencies with fallbacks
+try:
+    from google import genai
+    from google.genai import types
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    st.error("Google Gemini AI not available. Please check your API key configuration.")
 
 # Configure Streamlit page
 st.set_page_config(
@@ -25,8 +30,17 @@ class CloudAutomationAgent:
     def __init__(self):
         # Use environment variable or fallback to provided key
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AIzaSyDFgcA8F1RD0t0UmMbomQ54dHoGPZRT0ok")
-        self.gemini_client = genai.Client(api_key=self.gemini_api_key)
-        self.model = "gemini-2.0-flash"
+        
+        if GEMINI_AVAILABLE:
+            try:
+                self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+                self.model = "gemini-2.0-flash"
+            except Exception as e:
+                st.error(f"Failed to initialize Gemini client: {e}")
+                self.gemini_client = None
+        else:
+            self.gemini_client = None
+            
         self.automation_history = []
         self.setup_directories()
         
@@ -39,6 +53,9 @@ class CloudAutomationAgent:
         
     def process_image_with_gemini(self, image_path, prompt="Describe this image and suggest automation tasks"):
         """Process image with Gemini AI"""
+        if not self.gemini_client:
+            return "Gemini AI not available. Please check your configuration."
+            
         try:
             # Read and encode image
             with open(image_path, "rb") as image_file:
@@ -70,11 +87,13 @@ class CloudAutomationAgent:
             return response.text
             
         except Exception as e:
-            st.error(f"Error processing image with Gemini: {str(e)}")
-            return None
+            return f"Error processing image: {str(e)}"
             
     def generate_gemini_response(self, prompt):
         """Generate response using Gemini AI"""
+        if not self.gemini_client:
+            return "Gemini AI not available. Please check your configuration."
+            
         try:
             contents = [
                 types.Content(
@@ -98,50 +117,60 @@ class CloudAutomationAgent:
             return response.text
             
         except Exception as e:
-            st.error(f"Error generating Gemini response: {str(e)}")
-            return None
+            return f"Error generating response: {str(e)}"
             
     def create_robotask_script(self, task_description, automation_steps):
         """Create RoboTask automation script"""
         script_template = f"""
-RoboTask Automation Script
-Generated for: {task_description}
-Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}
+# RoboTask Automation Script
+# Generated for: {task_description}
+# Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}
 
-Task Description:
+## Task Description:
 {task_description}
 
-Automation Steps:
+## Automation Steps:
 {automation_steps}
 
-Implementation Instructions:
+## Implementation Instructions:
 1. Copy this script content
 2. Open RoboTask on your local machine
-3. Create a new task
-4. Implement the steps described above
-5. Test the automation carefully
-6. Schedule or trigger as needed
+3. Create a new task and implement the steps described above
+4. Test the automation carefully in a safe environment
+5. Adjust coordinates, window titles, and timing as needed
+6. Schedule or trigger the automation as required
 
-Note: This is a template. Adjust coordinates, window titles, 
-and specific actions according to your system configuration.
+## Important Notes:
+- This is a template that needs customization for your specific system
+- Always test automations thoroughly before deploying
+- Backup important data before running file operations
+- Monitor system resources during execution
+
+## RoboTask Implementation Guide:
+- Use "Activate Window" actions to focus on specific applications
+- Use "Mouse Click" actions for UI interactions
+- Use "Send Keys" actions for keyboard input
+- Use "Pause" actions to allow time for system responses
+- Use "If Condition" actions for error handling
+- Use "Log Message" actions for debugging and monitoring
 """
         return script_template
         
     def generate_automation_steps(self, task_description):
         """Generate automation steps using Gemini AI"""
         prompt = f"""
-        Generate detailed RoboTask automation steps for the following task: {task_description}
+        Generate detailed automation steps for this task: {task_description}
         
-        Please provide specific, actionable steps including:
-        1. Window management (finding and activating specific windows)
-        2. Mouse clicks with approximate coordinates
+        Provide specific, actionable steps including:
+        1. Window management and application activation
+        2. Mouse clicks with general positioning guidance
         3. Keyboard input and shortcuts
         4. File operations if needed
         5. Error handling suggestions
-        6. Wait conditions and timing
+        6. Wait conditions and timing recommendations
         
-        Format the response as a numbered list with clear, implementable steps.
-        Include RoboTask-specific commands and syntax where appropriate.
+        Format as a numbered list with clear, implementable steps.
+        Focus on RoboTask-compatible actions and commands.
         """
         
         response = self.generate_gemini_response(prompt)
@@ -152,17 +181,17 @@ and specific actions according to your system configuration.
         prompt = f"""
         Generate Python Selenium automation code for: {task_description}
         
-        The code should:
-        1. Set up Chrome WebDriver with appropriate options
+        Requirements:
+        1. Set up Chrome WebDriver with proper options
         2. Navigate to relevant websites
-        3. Locate elements using appropriate selectors
+        3. Locate elements using CSS selectors or XPath
         4. Perform actions (click, type, submit)
-        5. Handle potential errors and timeouts
-        6. Include proper cleanup
+        5. Include error handling and timeouts
+        6. Add proper cleanup code
         
-        Provide complete, runnable Python code with comments.
-        Use webdriver-manager for ChromeDriver setup.
-        Include error handling and best practices.
+        Provide complete, runnable Python code with detailed comments.
+        Use webdriver-manager for automatic ChromeDriver setup.
+        Include best practices for reliability and maintainability.
         """
         
         response = self.generate_gemini_response(prompt)
@@ -173,8 +202,8 @@ and specific actions according to your system configuration.
         self.automation_history.append({
             "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
             "task_type": task_type,
-            "description": description,
-            "result": result,
+            "description": description[:100] + "..." if len(description) > 100 else description,
+            "result_length": len(result) if result else 0,
             "status": "success" if result else "error"
         })
 
@@ -187,6 +216,11 @@ def get_automation_agent():
 def main():
     st.title("🤖 PC Automation Agent with Gemini AI")
     st.markdown("**Cloud Edition** - Generate automation scripts and browser automation code")
+    
+    # Check if Gemini is available
+    if not GEMINI_AVAILABLE:
+        st.error("⚠️ Google Gemini AI is not available. Please check your installation.")
+        st.stop()
     
     # API Key configuration
     with st.sidebar:
@@ -209,7 +243,7 @@ def main():
         st.header("🌟 Features")
         st.markdown("""
         - 🎯 **Task Analysis**: Describe any automation task
-        - 📝 **Script Generation**: Get RoboTask automation scripts
+        - 📝 **Script Generation**: Get RoboTask automation scripts  
         - 🌐 **Browser Automation**: Generate Selenium code
         - 📸 **Image Analysis**: Upload screenshots for automation insights
         - 🤖 **AI-Powered**: Uses Google Gemini AI
@@ -291,7 +325,7 @@ def main():
                 total_tasks = len(agent.automation_history)
                 successful_tasks = len([t for t in agent.automation_history if t['status'] == 'success'])
                 st.metric("Total Tasks Analyzed", total_tasks)
-                st.metric("Success Rate", f"{(successful_tasks/total_tasks*100):.1f}%")
+                st.metric("Success Rate", f"{(successful_tasks/total_tasks*100):.1f}%" if total_tasks > 0 else "0%")
                 
                 st.subheader("📝 Recent Tasks")
                 for task in agent.automation_history[-3:]:
