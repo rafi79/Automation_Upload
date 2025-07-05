@@ -62,16 +62,55 @@ class PathBasedUploader:
     def validate_file_path(self, file_path):
         """Validate that the file path exists and is accessible"""
         try:
+            # Handle different path formats
+            file_path = file_path.strip()
+            
+            # Replace common path variables
+            if "%USERPROFILE%" in file_path:
+                file_path = file_path.replace("%USERPROFILE%", str(Path.home()))
+            if "%USERNAME%" in file_path:
+                username = os.getenv("USERNAME", os.getenv("USER", ""))
+                file_path = file_path.replace("%USERNAME%", username)
+            
             path = Path(file_path)
+            
+            # If exact path doesn't exist, try to find similar files
             if not path.exists():
-                return False, f"File not found: {file_path}"
+                # Try to find the file in common locations
+                filename = path.name
+                possible_locations = [
+                    Path.home() / "Downloads",
+                    Path.home() / "Downloads" / "Telegram Desktop",
+                    Path.home() / "Documents", 
+                    Path.home() / "Desktop",
+                    Path("C:/Users") / os.getenv("USERNAME", "") / "Downloads",
+                    Path("C:/Users") / os.getenv("USERNAME", "") / "Downloads" / "Telegram Desktop"
+                ]
+                
+                for location in possible_locations:
+                    if location.exists():
+                        potential_file = location / filename
+                        if potential_file.exists():
+                            return True, f"File found at: {potential_file}", str(potential_file)
+                
+                # Try searching in subdirectories
+                downloads_folder = Path.home() / "Downloads"
+                if downloads_folder.exists():
+                    for item in downloads_folder.rglob(filename):
+                        if item.is_file():
+                            return True, f"File found at: {item}", str(item)
+                
+                return False, f"File not found: {file_path}. Searched in Downloads and common folders.", None
+            
             if not path.is_file():
-                return False, f"Path is not a file: {file_path}"
+                return False, f"Path is not a file: {file_path}", None
             if not os.access(path, os.R_OK):
-                return False, f"File is not readable: {file_path}"
-            return True, "File is valid"
+                return False, f"File is not readable: {file_path}", None
+            
+            return True, "File is valid", str(path)
+            
         except Exception as e:
-            return False, f"Error validating file: {str(e)}"
+            return False, f"Error validating file: {str(e)}", None
     
     def copy_file_to_temp(self, source_path):
         """Copy file to temporary directory for processing"""
@@ -85,7 +124,35 @@ class PathBasedUploader:
         except Exception as e:
             return None, f"Error copying file: {str(e)}"
     
-    def get_file_info(self, file_path):
+    def search_for_file(self, filename):
+        """Search for a file in common locations"""
+        search_locations = [
+            Path.home() / "Downloads",
+            Path.home() / "Downloads" / "Telegram Desktop", 
+            Path.home() / "Documents",
+            Path.home() / "Desktop",
+            Path("C:/Users") / os.getenv("USERNAME", "") / "Downloads" / "Telegram Desktop"
+        ]
+        
+        found_files = []
+        
+        for location in search_locations:
+            if location.exists():
+                # Search in the directory
+                for file_path in location.glob(f"*{filename}*"):
+                    if file_path.is_file():
+                        found_files.append(file_path)
+                
+                # Search recursively in subdirectories (max 2 levels deep)
+                for file_path in location.rglob(filename):
+                    if file_path.is_file() and len(file_path.parts) - len(location.parts) <= 2:
+                        found_files.append(file_path)
+        
+        # Remove duplicates
+        unique_files = list(set(found_files))
+        unique_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)  # Sort by newest first
+        
+        return unique_files[:10]  # Return top 10 matches
         """Get file information"""
         try:
             path = Path(file_path)
@@ -296,8 +363,16 @@ def main():
         # File path input
         file_path_input = st.text_input(
             "Enter full file path:",
-            placeholder="C:\\Users\\Rafi7\\Downloads\\Fathea Jannat Ayrin_Cover Letter_UIU.pdf",
+            placeholder="C:\\Users\\Rafi7\\Downloads\\Telegram Desktop\\IQAC.pdf",
             help="Enter the complete path to your file"
+        )
+        
+        # Alternative: Just enter filename to search
+        st.markdown("**OR** just enter the filename to search automatically:")
+        filename_only = st.text_input(
+            "Enter just the filename:",
+            placeholder="IQAC.pdf",
+            help="Enter just the filename and we'll search for it"
         )
         
         # Quick path suggestions
@@ -336,11 +411,53 @@ def main():
         )
         
         # File validation and processing
-        if file_path_input:
+        actual_file_path = None
+        
+        # Process filename search first
+        if filename_only and not file_path_input:
+            st.subheader("🔍 Searching for file...")
+            with st.spinner(f"Searching for {filename_only}..."):
+                found_files = uploader.search_for_file(filename_only)
+                
+                if found_files:
+                    st.success(f"✅ Found {len(found_files)} matching file(s)!")
+                    
+                    # Show found files
+                    st.write("**Select a file:**")
+                    for i, found_file in enumerate(found_files):
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            st.write(f"📁 {found_file}")
+                        with col_b:
+                            if st.button(f"Use This", key=f"use_file_{i}"):
+                                actual_file_path = str(found_file)
+                                st.session_state.selected_file = actual_file_path
+                                st.rerun()
+                else:
+                    st.error(f"❌ No files found matching '{filename_only}'")
+                    st.info("💡 Try entering the full path instead")
+        
+        # Check if we have a selected file from search
+        if hasattr(st.session_state, 'selected_file'):
+            actual_file_path = st.session_state.selected_file
+            st.success(f"✅ Selected file: {actual_file_path}")
+            
+        # Use full path if provided
+        elif file_path_input:
+            actual_file_path = file_path_input
+        
+        if actual_file_path:
             # Validate file path
-            is_valid, validation_message = uploader.validate_file_path(file_path_input)
+            validation_result = uploader.validate_file_path(actual_file_path)
+            is_valid = validation_result[0]
+            validation_message = validation_result[1]
+            corrected_path = validation_result[2] if len(validation_result) > 2 else actual_file_path
             
             if is_valid:
+                # Use corrected path if different
+                if corrected_path != actual_file_path:
+                    st.info(f"📍 Using corrected path: {corrected_path}")
+                    actual_file_path = corrected_path
                 # Show file info
                 file_info = uploader.get_file_info(file_path_input)
                 
@@ -466,24 +583,25 @@ def main():
     with col2:
         st.subheader("ℹ️ How It Works")
         st.markdown("""
-        **🎯 Direct Path Processing:**
-        1. Enter complete file path
-        2. System validates file exists
-        3. File copied for processing
-        4. Content extracted (if PDF)
-        5. Gemini AI analyzes content
+        **📁 Smart File Finding:**
+        1. Enter full path OR just filename
+        2. System searches common locations
+        3. Shows all matching files found
+        4. Click to select the right one
+        5. Automatic processing begins
         6. Results displayed instantly
-        7. Download analysis report
         
-        **📁 Supported Paths:**
-        - Absolute paths: `C:\\Users\\...`
-        - Environment variables: `%USERPROFILE%`
-        - Network paths: `\\\\server\\share`
+        **🔍 Search Locations:**
+        - Downloads folder
+        - Telegram Desktop folder
+        - Documents folder  
+        - Desktop
+        - Subfolders (2 levels deep)
         
-        **🔧 File Types:**
-        - ✅ PDF documents
-        - ✅ PNG images
-        - ✅ JPG/JPEG images
+        **💡 Tips:**
+        - Try just the filename: `IQAC.pdf`
+        - Or full path: `C:\\Users\\...\\file.pdf`
+        - System finds files automatically
         """)
         
         st.subheader("🤖 RoboTask Script")
