@@ -16,7 +16,17 @@ try:
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
-    st.error("Google Gemini AI not available. Please check your API key configuration.")
+
+# Try to import PDF processing libraries
+try:
+    import PyPDF2
+    PDF_AVAILABLE = True
+except ImportError:
+    try:
+        import fitz  # PyMuPDF
+        PDF_AVAILABLE = True
+    except ImportError:
+        PDF_AVAILABLE = False
 
 # Configure Streamlit page
 st.set_page_config(
@@ -26,7 +36,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-class CloudAutomationAgent:
+class AutomationAgent:
     def __init__(self):
         # Use environment variable or fallback to provided key
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AIzaSyDFgcA8F1RD0t0UmMbomQ54dHoGPZRT0ok")
@@ -46,31 +56,115 @@ class CloudAutomationAgent:
         
     def setup_directories(self):
         """Create necessary directories for file operations"""
-        self.temp_dir = Path(tempfile.gettempdir()) / "pc_automation_agent"
+        self.temp_dir = Path(tempfile.gettempdir()) / "automation_agent"
         self.temp_dir.mkdir(exist_ok=True)
-        self.images_dir = self.temp_dir / "images"
-        self.images_dir.mkdir(exist_ok=True)
+        self.pdfs_dir = self.temp_dir / "pdfs"
+        self.pdfs_dir.mkdir(exist_ok=True)
         
-    def process_image_with_gemini(self, image_path, prompt="Describe this image and suggest automation tasks"):
-        """Process image with Gemini AI"""
+    def extract_text_from_pdf(self, pdf_path):
+        """Extract text from PDF file"""
+        try:
+            text = ""
+            
+            # Try PyMuPDF first (more reliable)
+            if 'fitz' in globals():
+                doc = fitz.open(pdf_path)
+                for page in doc:
+                    text += page.get_text()
+                doc.close()
+                return text
+            
+            # Fallback to PyPDF2
+            if 'PyPDF2' in globals():
+                with open(pdf_path, 'rb') as file:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    for page in pdf_reader.pages:
+                        text += page.extract_text()
+                return text
+                
+            return "PDF text extraction libraries not available."
+            
+        except Exception as e:
+            return f"Error extracting text from PDF: {str(e)}"
+    
+    def analyze_pdf_with_gemini(self, pdf_path, analysis_type="Document Summary"):
+        """Analyze PDF with Gemini AI"""
         if not self.gemini_client:
-            return "Gemini AI not available. Please check your configuration."
+            return "Gemini AI not available. Please check your API key configuration."
             
         try:
-            # Read and encode image
-            with open(image_path, "rb") as image_file:
-                image_data = base64.b64encode(image_file.read()).decode()
+            # Extract text from PDF
+            pdf_text = self.extract_text_from_pdf(pdf_path)
             
+            if not pdf_text or pdf_text.startswith("Error") or pdf_text.startswith("PDF text"):
+                return f"Could not extract text from PDF: {pdf_text}"
+            
+            # Create analysis prompt based on type
+            prompts = {
+                "Document Summary": f"""
+                Please provide a comprehensive summary of this document:
+                
+                {pdf_text[:8000]}
+                
+                Include:
+                1. Main topic and purpose
+                2. Key points and findings
+                3. Important details
+                4. Conclusion or recommendations
+                """,
+                
+                "Key Information Extraction": f"""
+                Extract all key information from this document:
+                
+                {pdf_text[:8000]}
+                
+                Please identify and list:
+                1. Names and people mentioned
+                2. Dates and deadlines
+                3. Numbers, amounts, and quantities
+                4. Addresses and locations
+                5. Important facts and data points
+                
+                Format as a structured list.
+                """,
+                
+                "Automation Opportunities": f"""
+                Analyze this document for automation opportunities:
+                
+                {pdf_text[:8000]}
+                
+                Identify:
+                1. Repetitive processes mentioned
+                2. Manual tasks that could be automated
+                3. Data entry opportunities
+                4. Workflow improvements
+                5. Integration possibilities
+                6. Specific automation recommendations
+                """,
+                
+                "Action Items": f"""
+                Identify all action items and tasks from this document:
+                
+                {pdf_text[:8000]}
+                
+                Extract:
+                1. Tasks to be completed
+                2. Deadlines and due dates
+                3. Responsible parties
+                4. Follow-up requirements
+                5. Next steps
+                
+                Format as a prioritized list.
+                """
+            }
+            
+            prompt = prompts.get(analysis_type, prompts["Document Summary"])
+            
+            # Generate response using Gemini
             contents = [
                 types.Content(
                     role="user",
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                        types.Part.from_bytes(
-                            data=base64.b64decode(image_data),
-                            mime_type="image/png"
-                        ),
-                    ],
+                    parts=[types.Part.from_text(text=prompt)],
                 ),
             ]
             
@@ -87,461 +181,238 @@ class CloudAutomationAgent:
             return response.text
             
         except Exception as e:
-            return f"Error processing image: {str(e)}"
-            
-    def generate_gemini_response(self, prompt):
-        """Generate response using Gemini AI"""
-        if not self.gemini_client:
-            return "Gemini AI not available. Please check your configuration."
-            
-        try:
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                    ],
-                ),
-            ]
-            
-            generate_content_config = types.GenerateContentConfig(
-                response_mime_type="text/plain",
-            )
-            
-            response = self.gemini_client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=generate_content_config,
-            )
-            
-            return response.text
-            
-        except Exception as e:
-            return f"Error generating response: {str(e)}"
-            
-    def create_robotask_script(self, task_description, automation_steps):
-        """Create RoboTask automation script"""
-        script_template = f"""
-# RoboTask Automation Script
-# Generated for: {task_description}
-# Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}
-
-## Task Description:
-{task_description}
-
-## Automation Steps:
-{automation_steps}
-
-## Implementation Instructions:
-1. Copy this script content
-2. Open RoboTask on your local machine
-3. Create a new task and implement the steps described above
-4. Test the automation carefully in a safe environment
-5. Adjust coordinates, window titles, and timing as needed
-6. Schedule or trigger the automation as required
-
-## Important Notes:
-- This is a template that needs customization for your specific system
-- Always test automations thoroughly before deploying
-- Backup important data before running file operations
-- Monitor system resources during execution
-
-## RoboTask Implementation Guide:
-- Use "Activate Window" actions to focus on specific applications
-- Use "Mouse Click" actions for UI interactions
-- Use "Send Keys" actions for keyboard input
-- Use "Pause" actions to allow time for system responses
-- Use "If Condition" actions for error handling
-- Use "Log Message" actions for debugging and monitoring
-"""
-        return script_template
-        
-    def generate_automation_steps(self, task_description):
-        """Generate automation steps using Gemini AI"""
-        prompt = f"""
-        Generate detailed automation steps for this task: {task_description}
-        
-        Provide specific, actionable steps including:
-        1. Window management and application activation
-        2. Mouse clicks with general positioning guidance
-        3. Keyboard input and shortcuts
-        4. File operations if needed
-        5. Error handling suggestions
-        6. Wait conditions and timing recommendations
-        
-        Format as a numbered list with clear, implementable steps.
-        Focus on RoboTask-compatible actions and commands.
-        """
-        
-        response = self.generate_gemini_response(prompt)
-        return response if response else "No automation steps generated"
-        
-    def generate_browser_automation_code(self, task_description):
-        """Generate browser automation code"""
-        prompt = f"""
-        Generate Python Selenium automation code for: {task_description}
-        
-        Requirements:
-        1. Set up Chrome WebDriver with proper options
-        2. Navigate to relevant websites
-        3. Locate elements using CSS selectors or XPath
-        4. Perform actions (click, type, submit)
-        5. Include error handling and timeouts
-        6. Add proper cleanup code
-        
-        Provide complete, runnable Python code with detailed comments.
-        Use webdriver-manager for automatic ChromeDriver setup.
-        Include best practices for reliability and maintainability.
-        """
-        
-        response = self.generate_gemini_response(prompt)
-        return response if response else "# No automation code generated"
-        
-    def log_automation_task(self, task_type, description, result):
-        """Log automation task to history"""
+            return f"Error analyzing PDF: {str(e)}"
+    
+    def log_analysis(self, filename, analysis_type, result):
+        """Log analysis to history"""
         self.automation_history.append({
             "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "task_type": task_type,
-            "description": description[:100] + "..." if len(description) > 100 else description,
+            "filename": filename,
+            "analysis_type": analysis_type,
             "result_length": len(result) if result else 0,
-            "status": "success" if result else "error"
+            "status": "success" if result and not result.startswith("Error") else "error"
         })
 
 # Initialize the automation agent
 @st.cache_resource
-def get_automation_agent():
-    return CloudAutomationAgent()
+def get_agent():
+    return AutomationAgent()
 
-# Main Streamlit App
 def main():
-    st.title("🤖 PC Automation Agent with Gemini AI")
-    st.markdown("**Cloud Edition** - Generate automation scripts and browser automation code")
+    st.title("🤖 PC Automation Agent - PDF Analyzer")
+    st.markdown("**RoboTask Integration Ready** - Upload PDFs and get AI-powered analysis")
     
-    # Check if Gemini is available
+    # Check dependencies
     if not GEMINI_AVAILABLE:
-        st.error("⚠️ Google Gemini AI is not available. Please check your installation.")
-        st.stop()
+        st.error("⚠️ Google Gemini AI not available. Please install: pip install google-genai")
+        return
     
-    # API Key configuration
+    agent = get_agent()
+    
+    # Sidebar
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.header("📊 Analysis Dashboard")
         
-        # API Key input
-        api_key_input = st.text_input(
-            "Gemini API Key (optional)", 
-            type="password",
-            help="Enter your Gemini API key or use the default one"
+        # API Key status
+        if agent.gemini_client:
+            st.success("✅ Gemini AI Connected")
+        else:
+            st.error("❌ Gemini AI Not Available")
+        
+        # Statistics
+        if agent.automation_history:
+            total_analyses = len(agent.automation_history)
+            successful = len([a for a in agent.automation_history if a['status'] == 'success'])
+            st.metric("Total Analyses", total_analyses)
+            st.metric("Success Rate", f"{(successful/total_analyses*100):.0f}%")
+            
+            st.subheader("📈 Recent Activity")
+            for analysis in agent.automation_history[-3:]:
+                st.write(f"**{analysis['timestamp']}**")
+                st.write(f"File: {analysis['filename']}")
+                st.write(f"Type: {analysis['analysis_type']}")
+                st.write(f"Status: {analysis['status']}")
+                st.write("---")
+        else:
+            st.info("No analyses completed yet")
+        
+        st.header("🔧 RoboTask Setup")
+        st.markdown("""
+        **Hotkey**: Ctrl+Alt+U
+        
+        **What RoboTask does**:
+        1. Opens this page
+        2. Uploads PDF from Downloads
+        3. Selects analysis type
+        4. Triggers AI analysis
+        5. Shows results
+        """)
+    
+    # Main content
+    st.header("📄 PDF Analysis with Gemini AI")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("📁 Upload PDF Document")
+        
+        # File uploader
+        uploaded_file = st.file_uploader(
+            "Choose a PDF file", 
+            type=['pdf'],
+            help="Select a PDF file from your computer"
         )
         
-        if api_key_input:
-            os.environ["GEMINI_API_KEY"] = api_key_input
-            st.success("✅ Custom API key set!")
-        
-        st.markdown("---")
-        
-        # Features info
-        st.header("🌟 Features")
-        st.markdown("""
-        - 🎯 **Task Analysis**: Describe any automation task
-        - 📝 **Script Generation**: Get RoboTask automation scripts  
-        - 🌐 **Browser Automation**: Generate Selenium code
-        - 📸 **Image Analysis**: Upload screenshots for automation insights
-        - 🤖 **AI-Powered**: Uses Google Gemini AI
-        """)
-        
-        st.markdown("---")
-        
-        # Usage tips
-        st.header("💡 Usage Tips")
-        st.markdown("""
-        1. **Be Specific**: Describe your automation task in detail
-        2. **Include Context**: Mention applications, websites, or file types
-        3. **Test Safely**: Always test generated scripts in a safe environment
-        4. **Customize**: Adapt generated code to your specific needs
-        """)
-    
-    # Get automation agent
-    agent = get_automation_agent()
-    
-    # Main content area
-    tab1, tab2, tab3, tab4 = st.tabs(["🎯 Task Analysis", "📝 Script Generation", "🌐 Browser Automation", "📸 Image Analysis"])
-    
-    with tab1:
-        st.header("🎯 Automation Task Analysis")
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.subheader("Describe Your Automation Task")
-            task_description = st.text_area(
-                "What do you want to automate?",
-                height=150,
-                placeholder="Example: I want to automatically organize my desktop files by moving all PDFs to a Documents folder, all images to a Pictures folder, and delete files older than 30 days..."
+        if uploaded_file:
+            # Save uploaded file
+            pdf_path = agent.pdfs_dir / f"uploaded_{uuid.uuid4().hex[:8]}.pdf"
+            with open(pdf_path, "wb") as f:
+                f.write(uploaded_file.read())
+            
+            # File info
+            file_size = len(uploaded_file.getvalue()) / 1024 / 1024  # MB
+            st.success(f"✅ **{uploaded_file.name}** uploaded successfully!")
+            st.info(f"📊 File size: {file_size:.2f} MB")
+            
+            # Analysis type selection
+            st.subheader("🎯 Select Analysis Type")
+            analysis_type = st.selectbox(
+                "Choose analysis type:",
+                [
+                    "Document Summary",
+                    "Key Information Extraction", 
+                    "Automation Opportunities",
+                    "Action Items"
+                ],
+                help="Select what type of analysis you want Gemini AI to perform"
             )
             
-            complexity = st.selectbox(
-                "Task Complexity",
-                ["Simple", "Intermediate", "Advanced"],
-                help="Choose the level of detail you need in the automation plan"
-            )
+            # Big analyze button for RoboTask to click
+            if st.button("🔍 **ANALYZE PDF WITH GEMINI AI**", type="primary", use_container_width=True):
+                with st.spinner("🤖 Analyzing PDF with Gemini AI... Please wait..."):
+                    
+                    # Show progress
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    status_text.text("📄 Extracting text from PDF...")
+                    progress_bar.progress(25)
+                    time.sleep(1)
+                    
+                    status_text.text("🤖 Sending to Gemini AI...")
+                    progress_bar.progress(50)
+                    
+                    # Perform analysis
+                    analysis_result = agent.analyze_pdf_with_gemini(pdf_path, analysis_type)
+                    
+                    progress_bar.progress(75)
+                    status_text.text("📝 Processing results...")
+                    time.sleep(1)
+                    
+                    progress_bar.progress(100)
+                    status_text.text("✅ Analysis complete!")
+                    
+                    # Clear progress indicators
+                    progress_bar.empty()
+                    status_text.empty()
+                    
+                    if analysis_result and not analysis_result.startswith("Error"):
+                        st.success("🎉 **Analysis Complete!**")
+                        
+                        # Show results
+                        st.markdown("### 📋 Analysis Results")
+                        st.markdown("---")
+                        st.markdown(analysis_result)
+                        st.markdown("---")
+                        
+                        # Download button
+                        timestamp = int(time.time())
+                        filename = f"analysis_{uploaded_file.name}_{timestamp}.txt"
+                        
+                        st.download_button(
+                            label="💾 **Download Analysis Results**",
+                            data=analysis_result,
+                            file_name=filename,
+                            mime="text/plain",
+                            use_container_width=True
+                        )
+                        
+                        # Log the analysis
+                        agent.log_analysis(uploaded_file.name, analysis_type, analysis_result)
+                        
+                        # Show success message for RoboTask
+                        st.balloons()
+                        st.success("🚀 **PDF Analysis Completed Successfully!**")
+                        
+                    else:
+                        st.error(f"❌ Analysis failed: {analysis_result}")
             
-            if st.button("🔍 Analyze Task", type="primary"):
-                if task_description:
-                    with st.spinner("Analyzing your automation task..."):
-                        analysis_prompt = f"""
-                        Analyze this automation task and provide a comprehensive plan:
+            # Text preview section
+            st.subheader("📖 Text Preview")
+            if st.button("👁️ Preview Extracted Text"):
+                with st.spinner("Extracting text..."):
+                    extracted_text = agent.extract_text_from_pdf(pdf_path)
+                    
+                    if extracted_text and not extracted_text.startswith("Error"):
+                        # Show first 1000 characters
+                        preview = extracted_text[:1000] + "..." if len(extracted_text) > 1000 else extracted_text
+                        st.text_area("Extracted Text", preview, height=200)
                         
-                        Task: {task_description}
-                        Complexity Level: {complexity}
-                        
-                        Please provide:
-                        1. **Task Analysis**: Break down what needs to be automated
-                        2. **Approach Options**: Different ways to implement this automation
-                        3. **Required Tools**: What software/tools are needed
-                        4. **Step-by-Step Plan**: Detailed implementation steps
-                        5. **Potential Challenges**: Issues to watch out for
-                        6. **Testing Strategy**: How to safely test the automation
-                        7. **Maintenance Tips**: How to keep it working over time
-                        
-                        Format the response with clear headings and bullet points.
-                        """
-                        
-                        analysis = agent.generate_gemini_response(analysis_prompt)
-                        
-                        if analysis:
-                            st.markdown("### 🤖 AI Analysis Results")
-                            st.markdown(analysis)
-                            
-                            # Log the task
-                            agent.log_automation_task("task_analysis", task_description, analysis)
-                        else:
-                            st.error("Failed to analyze the task. Please try again.")
-                else:
-                    st.warning("Please describe your automation task first.")
-        
-        with col2:
-            st.subheader("📊 Quick Stats")
-            if agent.automation_history:
-                total_tasks = len(agent.automation_history)
-                successful_tasks = len([t for t in agent.automation_history if t['status'] == 'success'])
-                st.metric("Total Tasks Analyzed", total_tasks)
-                st.metric("Success Rate", f"{(successful_tasks/total_tasks*100):.1f}%" if total_tasks > 0 else "0%")
-                
-                st.subheader("📝 Recent Tasks")
-                for task in agent.automation_history[-3:]:
-                    st.write(f"**{task['timestamp']}**")
-                    st.write(f"Type: {task['task_type']}")
-                    st.write(f"Status: {task['status']}")
-                    st.write("---")
-            else:
-                st.info("No tasks analyzed yet. Start by describing an automation task!")
+                        st.download_button(
+                            label="📄 Download Full Text",
+                            data=extracted_text,
+                            file_name=f"text_{uploaded_file.name}_{int(time.time())}.txt",
+                            mime="text/plain"
+                        )
+                    else:
+                        st.error(f"Could not extract text: {extracted_text}")
     
-    with tab2:
-        st.header("📝 RoboTask Script Generation")
+    with col2:
+        st.subheader("ℹ️ How It Works")
+        st.markdown("""
+        **🔄 Automated Process:**
+        1. RoboTask opens this page
+        2. Selects PDF from Downloads folder
+        3. Uploads file automatically
+        4. Chooses analysis type
+        5. Triggers Gemini AI analysis
+        6. Results appear here
         
-        script_task = st.text_area(
-            "Describe the automation task for RoboTask:",
-            height=100,
-            placeholder="Example: Monitor CPU usage every 5 minutes and send an email alert if it exceeds 80%"
-        )
+        **🎯 Analysis Types:**
+        - **Document Summary**: Overview and key points
+        - **Key Information**: Names, dates, numbers
+        - **Automation Opportunities**: Process improvements
+        - **Action Items**: Tasks and deadlines
         
-        col1, col2 = st.columns(2)
+        **📁 Supported Files:**
+        - Text-based PDFs
+        - Scanned documents
+        - Forms and reports
+        - Contracts and invoices
+        - Research papers
+        """)
         
-        with col1:
-            script_type = st.selectbox("Script Type", [
-                "Desktop Automation",
-                "File Management", 
-                "System Monitoring",
-                "Application Control",
-                "Data Processing"
-            ])
-            
-        with col2:
-            include_error_handling = st.checkbox("Include Error Handling", value=True)
-            include_logging = st.checkbox("Include Detailed Logging", value=True)
+        st.subheader("🚀 RoboTask Commands")
+        st.code("""
+# RoboTask Actions:
+1. Open Browser → This URL
+2. Click File Upload
+3. Navigate to Downloads
+4. Select *.pdf files
+5. Click ANALYZE button
+6. Wait for results
+        """)
         
-        if st.button("🛠️ Generate RoboTask Script", type="primary"):
-            if script_task:
-                with st.spinner("Generating RoboTask automation script..."):
-                    # Generate automation steps
-                    automation_steps = agent.generate_automation_steps(script_task)
-                    
-                    # Create full script
-                    script_content = agent.create_robotask_script(script_task, automation_steps)
-                    
-                    st.markdown("### 📄 Generated RoboTask Script")
-                    st.code(script_content, language="text")
-                    
-                    # Download button
-                    st.download_button(
-                        label="💾 Download Script",
-                        data=script_content,
-                        file_name=f"robotask_automation_{int(time.time())}.txt",
-                        mime="text/plain"
-                    )
-                    
-                    # Implementation instructions
-                    st.markdown("### 🔧 Implementation Instructions")
-                    st.markdown("""
-                    1. **Copy the script content** using the download button
-                    2. **Open RoboTask** on your local machine
-                    3. **Create a new task** and configure the steps manually
-                    4. **Test thoroughly** in a safe environment
-                    5. **Adjust coordinates and timing** as needed for your system
-                    6. **Set up triggers** (schedule, hotkey, file watch, etc.)
-                    """)
-                    
-                    # Log the task
-                    agent.log_automation_task("script_generation", script_task, script_content)
-            else:
-                st.warning("Please describe the automation task first.")
-    
-    with tab3:
-        st.header("🌐 Browser Automation")
-        
-        browser_task = st.text_area(
-            "Describe the web automation task:",
-            height=100,
-            placeholder="Example: Login to Gmail, search for emails from last week, download all PDF attachments"
-        )
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            browser_type = st.selectbox("Browser", ["Chrome", "Firefox", "Edge"])
-            headless_mode = st.checkbox("Headless Mode", help="Run browser in background")
-            
-        with col2:
-            wait_timeout = st.slider("Element Wait Timeout (seconds)", 5, 30, 10)
-            include_screenshots = st.checkbox("Include Screenshot Debugging", value=True)
-        
-        if st.button("🚀 Generate Browser Automation", type="primary"):
-            if browser_task:
-                with st.spinner("Generating browser automation code..."):
-                    automation_code = agent.generate_browser_automation_code(browser_task)
-                    
-                    st.markdown("### 💻 Generated Selenium Code")
-                    st.code(automation_code, language="python")
-                    
-                    # Download button
-                    st.download_button(
-                        label="💾 Download Python Script",
-                        data=automation_code,
-                        file_name=f"browser_automation_{int(time.time())}.py",
-                        mime="text/python"
-                    )
-                    
-                    # Setup instructions
-                    st.markdown("### 🛠️ Setup Instructions")
-                    st.markdown("""
-                    1. **Install dependencies:**
-                       ```bash
-                       pip install selenium webdriver-manager
-                       ```
-                    
-                    2. **Save the code** to a `.py` file
-                    
-                    3. **Run the script:**
-                       ```bash
-                       python your_automation_script.py
-                       ```
-                    
-                    4. **Customize as needed** for your specific requirements
-                    """)
-                    
-                    # Log the task
-                    agent.log_automation_task("browser_automation", browser_task, automation_code)
-            else:
-                st.warning("Please describe the browser automation task first.")
-    
-    with tab4:
-        st.header("📸 Image Analysis for Automation")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Upload Screenshot or Image")
-            uploaded_file = st.file_uploader("Choose an image", type=['png', 'jpg', 'jpeg'])
-            
-            if uploaded_file:
-                image = Image.open(uploaded_file)
-                st.image(image, caption="Uploaded Image", use_column_width=True)
-                
-                # Save uploaded image
-                image_path = agent.images_dir / f"uploaded_{uuid.uuid4().hex[:8]}.png"
-                image.save(image_path)
-                
-                analysis_type = st.selectbox("Analysis Type", [
-                    "General Automation Opportunities",
-                    "UI Element Detection",
-                    "Workflow Analysis",
-                    "Process Documentation",
-                    "Error Detection"
-                ])
-                
-                custom_prompt = st.text_input(
-                    "Custom analysis prompt (optional):",
-                    placeholder="Focus on specific aspects you want analyzed"
-                )
-                
-                if st.button("🔍 Analyze Image"):
-                    base_prompts = {
-                        "General Automation Opportunities": "Analyze this image and identify automation opportunities. Look for repetitive tasks, manual processes, or workflows that could be automated.",
-                        "UI Element Detection": "Identify clickable elements, buttons, forms, and interactive components in this interface that could be automated.",
-                        "Workflow Analysis": "Analyze the workflow shown in this image and suggest how it could be streamlined or automated.",
-                        "Process Documentation": "Document the process shown in this image and suggest automation improvements.",
-                        "Error Detection": "Look for potential errors, inefficiencies, or issues in this interface that automation could help resolve."
-                    }
-                    
-                    analysis_prompt = custom_prompt if custom_prompt else base_prompts[analysis_type]
-                    
-                    with st.spinner("Analyzing image with AI..."):
-                        response = agent.process_image_with_gemini(image_path, analysis_prompt)
-                        
-                        if response:
-                            st.markdown("### 🤖 Image Analysis Results")
-                            st.markdown(response)
-                            
-                            # Log the task
-                            agent.log_automation_task("image_analysis", f"Analysis of {uploaded_file.name}", response)
-                        else:
-                            st.error("Failed to analyze the image. Please try again.")
-        
-        with col2:
-            st.subheader("📋 Analysis Tips")
-            st.markdown("""
-            **Best images for automation analysis:**
-            - Screenshots of applications or workflows
-            - User interfaces with visible buttons and menus
-            - Process diagrams or flowcharts
-            - Error messages or system alerts
-            - Repetitive manual tasks
-            
-            **What the AI can identify:**
-            - Clickable elements and buttons
-            - Form fields and input areas
-            - Navigation patterns
-            - Workflow inefficiencies
-            - Automation opportunities
-            - UI/UX improvements
-            """)
-            
-            st.subheader("🎯 Example Use Cases")
-            st.markdown("""
-            - **Desktop Apps**: Analyze software interfaces for automation
-            - **Web Forms**: Identify fields for auto-filling
-            - **Workflows**: Document and optimize business processes
-            - **Error Handling**: Automate error resolution
-            - **Data Entry**: Find repetitive input patterns
-            """)
+        if not PDF_AVAILABLE:
+            st.warning("⚠️ Install PyMuPDF for better PDF processing: `pip install PyMuPDF`")
     
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666; padding: 20px;'>
-        <h4>🤖 PC Automation Agent - Cloud Edition</h4>
-        <p>Powered by Google Gemini AI | Generate automation scripts for RoboTask and Selenium</p>
-        <p><strong>⚠️ Important:</strong> Always test generated scripts in a safe environment before production use!</p>
+        <h4>🤖 PC Automation Agent</h4>
+        <p>Powered by Google Gemini AI | Automated with RoboTask</p>
+        <p><strong>Press Ctrl+Alt+U</strong> to trigger automatic PDF analysis</p>
     </div>
     """, unsafe_allow_html=True)
 
