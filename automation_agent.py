@@ -1,4 +1,3 @@
-import streamlit as st
 import base64
 import os
 import json
@@ -30,6 +29,13 @@ except ImportError:
     except ImportError:
         PDF_AVAILABLE = False
 
+# Try to import speech recognition
+try:
+    import speech_recognition as sr
+    SPEECH_AVAILABLE = True
+except ImportError:
+    SPEECH_AVAILABLE = False
+
 # Configure Streamlit page
 st.set_page_config(
     page_title="Auto File Analyzer",
@@ -59,6 +65,87 @@ class AutoFileAnalyzer:
         """Create temporary directory for processing"""
         self.temp_dir = Path(tempfile.gettempdir()) / "auto_analyzer"
         self.temp_dir.mkdir(exist_ok=True)
+        
+    def transcribe_audio_to_text(self, audio_file_path):
+        """Convert audio to text using speech recognition"""
+        if not SPEECH_AVAILABLE:
+            return "Speech recognition not available. Please install: pip install SpeechRecognition"
+        
+        try:
+            recognizer = sr.Recognizer()
+            
+            # Read audio file
+            with sr.AudioFile(str(audio_file_path)) as source:
+                # Adjust for ambient noise
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                # Record the audio
+                audio = recognizer.record(source)
+            
+            # Recognize speech using Google's speech recognition
+            text = recognizer.recognize_google(audio)
+            return text
+            
+        except sr.UnknownValueError:
+            return "Could not understand the audio. Please speak clearly and try again."
+        except sr.RequestError as e:
+            return f"Error with speech recognition service: {e}"
+        except Exception as e:
+            return f"Error processing audio: {str(e)}"
+    
+    def process_voice_command(self, voice_text):
+        """Process voice command and extract filename/action"""
+        voice_text = voice_text.lower().strip()
+        
+        # Common patterns for file analysis commands
+        patterns = {
+            "analyze": ["analyze", "analyse", "process", "check"],
+            "document": ["document", "file", "pdf", "paper"],
+            "summary": ["summary", "summarize", "overview"],
+            "extract": ["extract", "find", "get"],
+            "automation": ["automation", "automate", "robot"]
+        }
+        
+        # Try to extract filename from voice command
+        words = voice_text.split()
+        potential_filename = None
+        analysis_type = "Document Summary"  # default
+        
+        # Look for file extensions
+        for word in words:
+            if any(ext in word for ext in ['.pdf', '.png', '.jpg', '.jpeg']):
+                potential_filename = word
+                break
+        
+        # If no extension found, look for common file patterns
+        if not potential_filename:
+            # Look for patterns like "cover letter", "resume", "report", etc.
+            if "cover" in voice_text and "letter" in voice_text:
+                potential_filename = "cover_letter.pdf"
+            elif "resume" in voice_text:
+                potential_filename = "resume.pdf"
+            elif "report" in voice_text:
+                potential_filename = "report.pdf"
+            elif "invoice" in voice_text:
+                potential_filename = "invoice.pdf"
+            elif "iqac" in voice_text:
+                potential_filename = "iqac.pdf"
+        
+        # Determine analysis type from voice command
+        if any(word in voice_text for word in patterns["summary"]):
+            analysis_type = "Document Summary"
+        elif any(word in voice_text for word in patterns["extract"]):
+            analysis_type = "Key Information Extraction"
+        elif any(word in voice_text for word in patterns["automation"]):
+            analysis_type = "Automation Opportunities"
+        else:
+            analysis_type = "Document Summary"
+        
+        return {
+            "filename": potential_filename,
+            "analysis_type": analysis_type,
+            "original_command": voice_text,
+            "confidence": "high" if potential_filename else "low"
+        }
         
     def search_for_file(self, filename):
         """Search for a file in common locations"""
@@ -326,7 +413,7 @@ def get_analyzer():
 
 def main():
     st.title("🤖 Auto File Analyzer with Gemini AI")
-    st.markdown("**Smart File Processing** - Upload by path or search by filename")
+    st.markdown("**Smart File Processing** - Upload by path, search by filename, or use voice commands")
     
     if not GEMINI_AVAILABLE:
         st.error("⚠️ Google Gemini AI not available. Please install: pip install google-genai")
@@ -342,6 +429,13 @@ def main():
             st.success("✅ Gemini AI Connected")
         else:
             st.error("❌ Gemini AI Not Available")
+        
+        # Voice recognition status
+        if SPEECH_AVAILABLE:
+            st.success("✅ Voice Recognition Available")
+        else:
+            st.warning("⚠️ Voice Recognition Unavailable")
+            st.caption("Install: pip install SpeechRecognition")
         
         if analyzer.analysis_history:
             total = len(analyzer.analysis_history)
@@ -359,94 +453,297 @@ def main():
         else:
             st.info("No analyses completed yet")
         
+        st.header("🎙️ Voice Commands")
+        st.markdown("""
+        **Example commands:**
+        - "Analyze cover letter PDF"
+        - "Process IQAC document" 
+        - "Extract information from invoice"
+        - "Summarize report file"
+        - "Check automation opportunities"
+        """)
+        
         st.header("🤖 RoboTask Ready")
         st.markdown("""
-        **Automation Steps:**
-        1. Enter filename below
-        2. System finds file automatically
-        3. Click "Use This" on found file
-        4. Select analysis type
-        5. Click "AUTO ANALYZE"
-        6. Download results
+        **Automation modes:**
+        1. Text input → File path/name
+        2. Voice input → Spoken commands
+        3. Manual upload → Drag & drop
         """)
     
-    # Main content
-    st.header("📁 Smart File Processing")
+    # Main content - Add tabs for different input methods
+    tab1, tab2, tab3 = st.tabs(["📝 Text Input", "🎙️ Voice Input", "📤 Manual Upload"])
     
-    col1, col2 = st.columns([2, 1])
+    with tab1:
+        st.header("📁 Smart File Processing")
     
-    with col1:
-        st.subheader("🔍 Find Your File")
+        col1, col2 = st.columns([2, 1])
         
-        # Method 1: Full path input
-        st.markdown("**Method 1: Enter Full File Path**")
-        file_path_input = st.text_input(
-            "Full file path:",
-            placeholder="C:\\Users\\Rafi7\\Downloads\\Telegram Desktop\\IQAC.pdf",
-            help="Enter the complete path to your file"
-        )
-        
-        # Method 2: Filename search
-        st.markdown("**Method 2: Search by Filename (Easier!)**")
-        filename_only = st.text_input(
-            "Just the filename:",
-            placeholder="IQAC.pdf",
-            help="Enter just the filename - we'll search for it automatically"
-        )
-        
-        # Analysis type selection
-        analysis_type = st.selectbox(
-            "Select Analysis Type:",
-            [
-                "Document Summary",
-                "Key Information Extraction",
-                "Automation Opportunities", 
-                "Content Analysis"
-            ]
-        )
-        
-        # File processing logic
-        selected_file_path = None
-        
-        # Process filename search
-        if filename_only and not file_path_input:
-            if st.button("🔍 Search for File", type="primary"):
-                with st.spinner(f"Searching for {filename_only}..."):
-                    # For cloud environment, simulate finding the file
-                    st.success("✅ Found matching file!")
+        with col1:
+            st.subheader("🔍 Find Your File")
+            
+            # Method 1: Full path input
+            st.markdown("**Method 1: Enter Full File Path**")
+            file_path_input = st.text_input(
+                "Full file path:",
+                placeholder="C:\\Users\\Rafi7\\Downloads\\Telegram Desktop\\IQAC.pdf",
+                help="Enter the complete path to your file",
+                key="text_file_path"
+            )
+            
+            # Method 2: Filename search
+            st.markdown("**Method 2: Search by Filename (Easier!)**")
+            filename_only = st.text_input(
+                "Just the filename:",
+                placeholder="IQAC.pdf",
+                help="Enter just the filename - we'll search for it automatically",
+                key="text_filename"
+            )
+            
+            # Analysis type selection
+            analysis_type = st.selectbox(
+                "Select Analysis Type:",
+                [
+                    "Document Summary",
+                    "Key Information Extraction",
+                    "Automation Opportunities", 
+                    "Content Analysis"
+                ],
+                key="text_analysis_type"
+            )
+            
+            # File processing logic
+            selected_file_path = None
+            
+            # Process filename search
+            if filename_only and not file_path_input:
+                if st.button("🔍 Search for File", type="primary", key="text_search_btn"):
+                    with st.spinner(f"Searching for {filename_only}..."):
+                        # For cloud environment, simulate finding the file
+                        st.success("✅ Found matching file!")
+                        
+                        # Create file info based on filename
+                        simulated_file_info = {
+                            "name": filename_only,
+                            "size_mb": 0.5,
+                            "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
+                            "type": "PDF" if filename_only.lower().endswith('.pdf') else "Image"
+                        }
+                        
+                        # Store in session state
+                        st.session_state.selected_file = f"/simulated/downloads/{filename_only}"
+                        st.session_state.selected_file_info = simulated_file_info
+                        st.rerun()  # Refresh to show the analysis section
+            
+            # Process full path
+            elif file_path_input:
+                if st.button("✅ Validate File Path", type="primary", key="text_validate_btn"):
+                    # For cloud environment, simulate validation
+                    st.success("✅ File path validated!")
                     
-                    # Create file info based on filename
+                    # Create simulated file info
+                    filename = Path(file_path_input).name
                     simulated_file_info = {
-                        "name": filename_only,
+                        "name": filename,
                         "size_mb": 0.5,
                         "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
-                        "type": "PDF" if filename_only.lower().endswith('.pdf') else "Image"
+                        "type": "PDF" if filename.lower().endswith('.pdf') else "Image"
                     }
                     
                     # Store in session state
-                    st.session_state.selected_file = f"/simulated/downloads/{filename_only}"
+                    st.session_state.selected_file = file_path_input
                     st.session_state.selected_file_info = simulated_file_info
-                    st.rerun()  # Refresh to show the analysis section
+                    st.rerun()  # Refresh to show analysis section
+    
+    with tab2:
+        st.header("🎙️ Voice-Controlled File Analysis")
         
-        # Process full path
-        elif file_path_input:
-            if st.button("✅ Validate File Path", type="primary"):
-                # For cloud environment, simulate validation
-                st.success("✅ File path validated!")
+        if not SPEECH_AVAILABLE:
+            st.error("⚠️ Speech recognition not available in cloud environment.")
+            st.info("💡 This feature works on local installations with: `pip install SpeechRecognition`")
+            
+            # Demo mode for cloud
+            st.markdown("### 🎭 Demo Mode")
+            st.markdown("Try these example voice commands:")
+            
+            example_commands = [
+                "Analyze cover letter PDF",
+                "Process IQAC document",
+                "Extract information from invoice PDF",
+                "Summarize report file",
+                "Check automation opportunities in document"
+            ]
+            
+            selected_demo = st.selectbox("Choose a demo command:", example_commands)
+            
+            if st.button("🎬 Simulate Voice Command", type="primary"):
+                with st.spinner("🎙️ Processing voice command..."):
+                    time.sleep(2)
+                    
+                    # Process the demo command
+                    result = analyzer.process_voice_command(selected_demo)
+                    
+                    st.success(f"🎤 Voice command recognized: '{selected_demo}'")
+                    st.info(f"📄 Detected filename: {result['filename'] or 'No specific file detected'}")
+                    st.info(f"🎯 Analysis type: {result['analysis_type']}")
+                    
+                    if result['filename']:
+                        # Create simulated file info
+                        simulated_file_info = {
+                            "name": result['filename'],
+                            "size_mb": 0.5,
+                            "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
+                            "type": "PDF" if result['filename'].lower().endswith('.pdf') else "Image"
+                        }
+                        
+                        # Store in session state
+                        st.session_state.selected_file = f"/voice/commands/{result['filename']}"
+                        st.session_state.selected_file_info = simulated_file_info
+                        st.session_state.voice_analysis_type = result['analysis_type']
+                        
+                        st.success("✅ File selected via voice command! Analysis section will appear below.")
+                        st.rerun()
+        else:
+            # Real voice input for local environments
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.subheader("🎤 Voice Commands")
                 
-                # Create simulated file info
-                filename = Path(file_path_input).name
-                simulated_file_info = {
-                    "name": filename,
-                    "size_mb": 0.5,
-                    "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
-                    "type": "PDF" if filename.lower().endswith('.pdf') else "Image"
-                }
+                # Audio recording simulation (since we can't actually record in browser)
+                st.markdown("**Record Voice Command:**")
                 
-                # Store in session state
-                st.session_state.selected_file = file_path_input
-                st.session_state.selected_file_info = simulated_file_info
-                st.rerun()  # Refresh to show analysis section
+                recording_duration = st.slider("Recording duration (seconds):", 3, 10, 5)
+                
+                if st.button("🎙️ Start Voice Recording", type="primary"):
+                    st.info("🎤 Recording would start here in a local environment with microphone access")
+                    
+                    # Simulate recording
+                    progress_bar = st.progress(0)
+                    for i in range(recording_duration):
+                        time.sleep(1)
+                        progress_bar.progress((i + 1) / recording_duration)
+                    
+                    st.success("🎤 Voice recording completed!")
+                    st.info("💡 In a real environment, this would transcribe your speech to text")
+                
+                # Manual voice command input for testing
+                st.markdown("**Or type a voice command:**")
+                voice_command = st.text_input(
+                    "Voice command:",
+                    placeholder="Analyze cover letter PDF",
+                    help="Simulate what you would say"
+                )
+                
+                if voice_command and st.button("🎯 Process Voice Command", type="primary"):
+                    with st.spinner("🧠 Processing voice command..."):
+                        result = analyzer.process_voice_command(voice_command)
+                        
+                        st.success(f"🎤 Command: '{voice_command}'")
+                        st.info(f"📄 Detected file: {result['filename'] or 'No specific file detected'}")
+                        st.info(f"🎯 Analysis type: {result['analysis_type']}")
+                        st.info(f"🎲 Confidence: {result['confidence']}")
+                        
+                        if result['filename']:
+                            # Create file info
+                            simulated_file_info = {
+                                "name": result['filename'],
+                                "size_mb": 0.5,
+                                "modified": time.strftime('%Y-%m-%d %H:%M:%S'),
+                                "type": "PDF" if result['filename'].lower().endswith('.pdf') else "Image"
+                            }
+                            
+                            # Store in session state
+                            st.session_state.selected_file = f"/voice/commands/{result['filename']}"
+                            st.session_state.selected_file_info = simulated_file_info
+                            st.session_state.voice_analysis_type = result['analysis_type']
+                            st.rerun()
+            
+            with col2:
+                st.subheader("🎙️ Voice Tips")
+                st.markdown("""
+                **Example commands:**
+                - "Analyze my cover letter"
+                - "Process IQAC PDF file"
+                - "Extract data from invoice"
+                - "Summarize the report"
+                - "Find automation opportunities"
+                
+                **Supported files:**
+                - PDF documents
+                - Image files (PNG, JPG)
+                - Any file with extension
+                
+                **Analysis types:**
+                - Say "summary" for overview
+                - Say "extract" for data extraction
+                - Say "automation" for opportunities
+                """)
+    
+    with tab3:
+        st.header("📤 Manual File Upload")
+        
+        # Manual file upload fallback
+        uploaded_file = st.file_uploader("Upload file directly", type=['pdf', 'png', 'jpg', 'jpeg'])
+        
+        if uploaded_file:
+            st.success(f"📁 Uploaded: {uploaded_file.name}")
+            
+            # Analysis type for uploaded file
+            upload_analysis_type = st.selectbox(
+                "Select Analysis Type:",
+                [
+                    "Document Summary",
+                    "Key Information Extraction",
+                    "Automation Opportunities", 
+                    "Content Analysis"
+                ],
+                key="upload_analysis_type"
+            )
+            
+            if st.button("🔍 Analyze Uploaded File", type="primary"):
+                with st.spinner("🤖 Analyzing uploaded file..."):
+                    # Create file info
+                    file_info = {
+                        "name": uploaded_file.name,
+                        "size_mb": len(uploaded_file.getvalue()) / 1024 / 1024,
+                        "type": "PDF" if uploaded_file.type == "application/pdf" else "Image"
+                    }
+                    
+                    # Save and process file
+                    temp_path = analyzer.temp_dir / f"uploaded_{uuid.uuid4().hex[:8]}_{uploaded_file.name}"
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded_file.read())
+                    
+                    # Extract content
+                    if file_info['type'] == "PDF":
+                        content = analyzer.extract_text_from_pdf(temp_path)
+                    else:
+                        content = f"Image file: {uploaded_file.name}"
+                    
+                    # Analyze
+                    analysis_result = analyzer.analyze_with_gemini(content, file_info, upload_analysis_type)
+                    
+                    # Show results
+                    if analysis_result:
+                        st.success("🎉 **Analysis Completed Successfully!**")
+                        st.markdown("### 📊 Analysis Results")
+                        st.markdown("---")
+                        st.markdown(analysis_result)
+                        st.markdown("---")
+                        
+                        st.download_button(
+                            label="💾 Download Analysis",
+                            data=analysis_result,
+                            file_name=f"analysis_{uploaded_file.name}_{int(time.time())}.txt",
+                            mime="text/plain",
+                            use_container_width=True
+                        )
+                        
+                        st.balloons()
+                    
+                    # Cleanup
+                    temp_path.unlink(missing_ok=True)
         
         # Show selected file and analysis section
         if hasattr(st.session_state, 'selected_file') and hasattr(st.session_state, 'selected_file_info'):
