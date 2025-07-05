@@ -3,3 +3,4 @@ google-genai
 PyMuPDF
 pillow
 requests
+SpeechRecognition
